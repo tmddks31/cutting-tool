@@ -2,23 +2,18 @@
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
-<title>컷팅 도구 v11</title>
+<title>컷팅 도구 v12</title>
 <style>
 body { font-family: Arial; padding: 20px; }
 canvas { border: 1px solid #000; width: 100%; max-width: 500px; }
-
-button {
-  margin-top: 10px;
-  padding: 10px;
-}
+button { margin-top: 10px; padding: 10px; }
 </style>
 </head>
 <body>
 
-<h2>📐 컷팅 도구 (선 기반 v11)</h2>
+<h2>📐 컷팅 도구 v12</h2>
 
 <input type="file" id="imageInput" accept="image/*">
-
 <p id="step">STEP 1: 사진 선택</p>
 
 <canvas id="canvas"></canvas>
@@ -41,7 +36,6 @@ let scalePoints = [];
 let points = [];
 let img = new Image();
 
-// 이미지 로드
 document.getElementById("imageInput").addEventListener("change", function(e){
     let file = e.target.files[0];
     if (!file) return;
@@ -60,7 +54,6 @@ document.getElementById("imageInput").addEventListener("change", function(e){
     img.src = url;
 });
 
-// 좌표
 function getPos(e){
     let rect = canvas.getBoundingClientRect();
     return {
@@ -69,91 +62,125 @@ function getPos(e){
     };
 }
 
-// 클릭 이벤트
 canvas.addEventListener("click", function(e){
     let p = getPos(e);
 
     if(step === 2){
         scalePoints.push(p);
-        drawPoint(p);
+        drawPoint(p, "red");
 
         if(scalePoints.length === 2){
             let px = dist(scalePoints[0], scalePoints[1]);
             let real = prompt("기준 길이(mm)", "500");
-
             scale = real / px;
+
             step = 3;
-            document.getElementById("step").innerText = "STEP 3: 선을 따라 클릭";
+            document.getElementById("step").innerText = "STEP 3: 외곽선 클릭";
         }
     }
 
     else if(step === 3){
+        // 시작점 근처 클릭 시 자동 종료
+        if(points.length > 2 && dist(points[0], p) < 20){
+            finish();
+            return;
+        }
+
         let snapped = snap(points[points.length-1], p);
         points.push(snapped);
         redraw();
     }
 });
 
-// 스냅 (직선 보정)
 function snap(prev, current){
     if(!prev) return current;
 
     let dx = Math.abs(current.x - prev.x);
     let dy = Math.abs(current.y - prev.y);
 
-    if(dx < 20) return {x: prev.x, y: current.y}; // 수직
-    if(dy < 20) return {x: current.x, y: prev.y}; // 수평
+    if(dx < 20) return {x: prev.x, y: current.y};
+    if(dy < 20) return {x: current.x, y: prev.y};
 
     return current;
 }
 
-// 그리기
 function redraw(){
     ctx.clearRect(0,0,canvas.width,canvas.height);
     ctx.drawImage(img,0,0);
 
     ctx.strokeStyle = "blue";
+    ctx.lineWidth = 2;
     ctx.beginPath();
 
     for(let i=0;i<points.length;i++){
         let p = points[i];
         if(i===0) ctx.moveTo(p.x,p.y);
         else ctx.lineTo(p.x,p.y);
+
+        drawPoint(p, "yellow");
+
+        // 변 번호 표시
+        if(i > 0){
+            let midX = (points[i-1].x + p.x) / 2;
+            let midY = (points[i-1].y + p.y) / 2;
+
+            ctx.fillStyle = "white";
+            ctx.fillText("변" + i, midX, midY);
+        }
     }
 
     ctx.stroke();
 
-    // 치수 계산
+    // 기준선 표시
+    if(scalePoints.length === 2){
+        ctx.strokeStyle = "red";
+        ctx.beginPath();
+        ctx.moveTo(scalePoints[0].x, scalePoints[0].y);
+        ctx.lineTo(scalePoints[1].x, scalePoints[1].y);
+        ctx.stroke();
+
+        ctx.fillStyle = "red";
+        ctx.fillText("기준선", (scalePoints[0].x + scalePoints[1].x)/2,
+                             (scalePoints[0].y + scalePoints[1].y)/2);
+    }
+
+    // 결과 출력
     let out = "";
     for(let i=1;i<points.length;i++){
         let mm = dist(points[i-1], points[i]) * scale;
-        out += `변 ${i}: ${mm.toFixed(1)} mm<br>`;
+
+        if(mm > 5){ // 노이즈 제거
+            out += `변 ${i}: ${mm.toFixed(1)} (mm)<br>`;
+        }
     }
 
     document.getElementById("output").innerHTML = out;
 }
 
-// 완료 (자동 닫힘)
 function finish(){
     if(points.length > 2){
-        points.push(points[0]);
+        let first = points[0];
+        let last = points[points.length - 1];
+
+        if(dist(first, last) > 10){
+            points.push(first);
+        }
+
         redraw();
     }
 }
 
-// 되돌리기
 function undo(){
     points.pop();
     redraw();
 }
 
-// 거리
 function dist(a,b){
     return Math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2);
 }
 
-function drawPoint(p){
-    ctx.fillStyle = "red";
+function drawPoint(p, color){
+    ctx.fillStyle = color;
     ctx.beginPath();
     ctx.arc(p.x, p.y, 4, 0, Math.PI*2);
     ctx.fill();
