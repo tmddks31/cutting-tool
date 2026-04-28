@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>컷팅 도구 v10</title>
+<style>
+  body { font-family: Arial; padding: 20px; }
+  canvas { border: 1px solid #000; width: 100%; max-width: 500px; }
+
+  .upload-btn {
+    display: inline-block;
+    padding: 12px 20px;
+    background: #333;
+    color: #fff;
+    cursor: pointer;
+    margin: 5px 0;
+  }
+
+  input[type="file"] { display: none; }
+
+  .guide { font-size: 14px; color: #555; margin-top: 5px; }
+</style>
+</head>
+<body>
+
+<h2>📐 컷팅 도구 (v10)</h2>
+
+<label for="imageInput" class="upload-btn">
+  📷 사진 선택 / 촬영
+</label>
+
+<input type="file" id="imageInput" accept="image/*">
+
+<p id="step">STEP 1: 사진 선택</p>
+<p class="guide" id="guide"></p>
+
+<canvas id="canvas"></canvas>
+
+<br>
+<button onclick="finishPolygon()">외곽선 완료</button>
+<button onclick="resetAll()">초기화</button>
+
+<h3>결과</h3>
+<div id="output"></div>
+
+<script>
+let canvas = document.getElementById("canvas");
+let ctx = canvas.getContext("2d");
+
+let step = 1;
+let scale = 1;
+
+let scalePoints = [];
+let polygon = [];
+
+// 🔥 핵심: objectURL 방식
+document.getElementById("imageInput").addEventListener("change", function(e){
+    let file = e.target.files[0];
+    if (!file) return;
+
+    let url = URL.createObjectURL(file);
+    let img = new Image();
+
+    img.onload = function(){
+
+        let maxSize = 1000;
+        let w = img.width;
+        let h = img.height;
+
+        if (w > h) {
+            if (w > maxSize) {
+                h *= maxSize / w;
+                w = maxSize;
+            }
+        } else {
+            if (h > maxSize) {
+                w *= maxSize / h;
+                h = maxSize;
+            }
+        }
+
+        canvas.width = w;
+        canvas.height = h;
+
+        ctx.clearRect(0,0,w,h);
+        ctx.drawImage(img, 0, 0, w, h);
+
+        URL.revokeObjectURL(url); // 메모리 정리
+
+        step = 2;
+        updateStep();
+    };
+
+    img.onerror = function(){
+        alert("이미지 로딩 실패 (형식 문제일 수 있음)");
+    };
+
+    img.src = url;
+});
+
+// 좌표
+function getPos(e){
+    let rect = canvas.getBoundingClientRect();
+    return {
+        x: (e.clientX - rect.left) * (canvas.width / rect.width),
+        y: (e.clientY - rect.top) * (canvas.height / rect.height)
+    };
+}
+
+// 클릭
+canvas.addEventListener("click", function(e){
+    let pos = getPos(e);
+
+    if (step === 2){
+        scalePoints.push(pos);
+        drawPoint(pos);
+
+        if (scalePoints.length === 2){
+            let px = dist(scalePoints[0], scalePoints[1]);
+            let real = prompt("이 길이(mm)?", "500");
+
+            if (!real) return;
+
+            scale = real / px;
+            step = 3;
+            updateStep();
+        }
+    }
+
+    else if (step === 3){
+        polygon.push(pos);
+        redraw();
+    }
+});
+
+function drawPoint(p){
+    ctx.fillStyle = "red";
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 4, 0, Math.PI*2);
+    ctx.fill();
+}
+
+function redraw(){
+    if (polygon.length > 1){
+        ctx.strokeStyle = "blue";
+        ctx.beginPath();
+        ctx.moveTo(polygon[0].x, polygon[0].y);
+
+        for (let i=1;i<polygon.length;i++){
+            ctx.lineTo(polygon[i].x, polygon[i].y);
+        }
+        ctx.stroke();
+    }
+
+    let out = "";
+    for (let i=1;i<polygon.length;i++){
+        let mm = dist(polygon[i-1], polygon[i]) * scale;
+        out += `변 ${i}: ${mm.toFixed(1)} mm<br>`;
+    }
+
+    document.getElementById("output").innerHTML = out;
+}
+
+function finishPolygon(){
+    if (polygon.length > 2){
+        polygon.push(polygon[0]);
+        redraw();
+    }
+}
+
+function dist(a,b){
+    return Math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2);
+}
+
+function resetAll(){
+    polygon = [];
+    scalePoints = [];
+    scale = 1;
+
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    document.getElementById("output").innerHTML = "";
+    document.getElementById("imageInput").value = "";
+
+    step = 1;
+    updateStep();
+}
+
+function updateStep(){
+    let txt = "";
+    let guide = "";
+
+    if (step === 1){
+        txt = "STEP 1: 사진 선택";
+        guide = "사진을 촬영하거나 선택하세요";
+    }
+
+    if (step === 2){
+        txt = "STEP 2: 기준선 2점 클릭";
+        guide = "길이를 아는 구간 2점을 찍으세요";
+    }
+
+    if (step === 3){
+        txt = "STEP 3: 외곽선 클릭";
+        guide = "영역을 따라 점을 찍으세요";
+    }
+
+    document.getElementById("step").innerText = txt;
+    document.getElementById("guide").innerText = guide;
+}
+</script>
+
+</body>
+</html>
