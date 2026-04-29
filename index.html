@@ -2,18 +2,36 @@
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
-<title>컷팅 도구 v12</title>
+<title>컷팅 도구 v13</title>
 <style>
 body { font-family: Arial; padding: 20px; }
-canvas { border: 1px solid #000; width: 100%; max-width: 500px; }
-button { margin-top: 10px; padding: 10px; }
+canvas { border: 1px solid #000; width: 100%; max-width: 500px; touch-action: manipulation; }
+button, select { margin-top: 10px; padding: 8px; }
 </style>
 </head>
 <body>
 
-<h2>📐 컷팅 도구 v12</h2>
+<h2>📐 컷팅 도구 v13</h2>
 
 <input type="file" id="imageInput" accept="image/*">
+
+<br>
+
+선 색상:
+<select id="lineColor">
+  <option value="blue">파랑</option>
+  <option value="red">빨강</option>
+  <option value="green">초록</option>
+  <option value="yellow">노랑</option>
+</select>
+
+점 색상:
+<select id="pointColor">
+  <option value="yellow">노랑</option>
+  <option value="red">빨강</option>
+  <option value="white">흰색</option>
+</select>
+
 <p id="step">STEP 1: 사진 선택</p>
 
 <canvas id="canvas"></canvas>
@@ -35,6 +53,8 @@ let scale = 1;
 let scalePoints = [];
 let points = [];
 let img = new Image();
+
+let SNAP_DIST = 25; // 클릭 보정 거리
 
 document.getElementById("imageInput").addEventListener("change", function(e){
     let file = e.target.files[0];
@@ -62,12 +82,22 @@ function getPos(e){
     };
 }
 
+// 🔥 클릭 보정
+function correctPoint(p){
+    for(let pt of points){
+        if(dist(pt, p) < SNAP_DIST){
+            return pt; // 기존 점으로 스냅
+        }
+    }
+    return p;
+}
+
 canvas.addEventListener("click", function(e){
     let p = getPos(e);
 
     if(step === 2){
         scalePoints.push(p);
-        drawPoint(p, "red");
+        drawPoint(p);
 
         if(scalePoints.length === 2){
             let px = dist(scalePoints[0], scalePoints[1]);
@@ -80,8 +110,10 @@ canvas.addEventListener("click", function(e){
     }
 
     else if(step === 3){
-        // 시작점 근처 클릭 시 자동 종료
-        if(points.length > 2 && dist(points[0], p) < 20){
+        p = correctPoint(p);
+
+        // 시작점 근처 → 자동 종료
+        if(points.length > 2 && dist(points[0], p) < SNAP_DIST){
             finish();
             return;
         }
@@ -108,18 +140,21 @@ function redraw(){
     ctx.clearRect(0,0,canvas.width,canvas.height);
     ctx.drawImage(img,0,0);
 
-    ctx.strokeStyle = "blue";
+    let lineColor = document.getElementById("lineColor").value;
+    let pointColor = document.getElementById("pointColor").value;
+
+    ctx.strokeStyle = lineColor;
     ctx.lineWidth = 2;
     ctx.beginPath();
 
     for(let i=0;i<points.length;i++){
         let p = points[i];
+
         if(i===0) ctx.moveTo(p.x,p.y);
         else ctx.lineTo(p.x,p.y);
 
-        drawPoint(p, "yellow");
+        drawPoint(p, pointColor);
 
-        // 변 번호 표시
         if(i > 0){
             let midX = (points[i-1].x + p.x) / 2;
             let midY = (points[i-1].y + p.y) / 2;
@@ -131,25 +166,12 @@ function redraw(){
 
     ctx.stroke();
 
-    // 기준선 표시
-    if(scalePoints.length === 2){
-        ctx.strokeStyle = "red";
-        ctx.beginPath();
-        ctx.moveTo(scalePoints[0].x, scalePoints[0].y);
-        ctx.lineTo(scalePoints[1].x, scalePoints[1].y);
-        ctx.stroke();
-
-        ctx.fillStyle = "red";
-        ctx.fillText("기준선", (scalePoints[0].x + scalePoints[1].x)/2,
-                             (scalePoints[0].y + scalePoints[1].y)/2);
-    }
-
     // 결과 출력
     let out = "";
     for(let i=1;i<points.length;i++){
         let mm = dist(points[i-1], points[i]) * scale;
 
-        if(mm > 5){ // 노이즈 제거
+        if(mm > 5){
             out += `변 ${i}: ${mm.toFixed(1)} (mm)<br>`;
         }
     }
@@ -179,10 +201,10 @@ function dist(a,b){
     return Math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2);
 }
 
-function drawPoint(p, color){
+function drawPoint(p, color="yellow"){
     ctx.fillStyle = color;
     ctx.beginPath();
-    ctx.arc(p.x, p.y, 4, 0, Math.PI*2);
+    ctx.arc(p.x, p.y, 6, 0, Math.PI*2); // 점 크게
     ctx.fill();
 }
 </script>
