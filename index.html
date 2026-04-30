@@ -2,16 +2,16 @@
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
-<title>컷팅 도구 v13</title>
+<title>컷팅 도구 v14</title>
 <style>
 body { font-family: Arial; padding: 20px; }
-canvas { border: 1px solid #000; width: 100%; max-width: 500px; touch-action: manipulation; }
+canvas { border: 1px solid #000; width: 100%; max-width: 500px; }
 button, select { margin-top: 10px; padding: 8px; }
 </style>
 </head>
 <body>
 
-<h2>📐 컷팅 도구 v13</h2>
+<h2>📐 컷팅 도구 v14</h2>
 
 <input type="file" id="imageInput" accept="image/*">
 
@@ -54,7 +54,7 @@ let scalePoints = [];
 let points = [];
 let img = new Image();
 
-let SNAP_DIST = 25; // 클릭 보정 거리
+let SNAP_DIST = 25;
 
 document.getElementById("imageInput").addEventListener("change", function(e){
     let file = e.target.files[0];
@@ -68,6 +68,9 @@ document.getElementById("imageInput").addEventListener("change", function(e){
         ctx.drawImage(img, 0, 0);
 
         step = 2;
+        scalePoints = [];
+        points = [];
+
         document.getElementById("step").innerText = "STEP 2: 기준선 2점 클릭";
     };
 
@@ -82,22 +85,12 @@ function getPos(e){
     };
 }
 
-// 🔥 클릭 보정
-function correctPoint(p){
-    for(let pt of points){
-        if(dist(pt, p) < SNAP_DIST){
-            return pt; // 기존 점으로 스냅
-        }
-    }
-    return p;
-}
-
 canvas.addEventListener("click", function(e){
     let p = getPos(e);
 
     if(step === 2){
         scalePoints.push(p);
-        drawPoint(p);
+        redraw();
 
         if(scalePoints.length === 2){
             let px = dist(scalePoints[0], scalePoints[1]);
@@ -112,7 +105,6 @@ canvas.addEventListener("click", function(e){
     else if(step === 3){
         p = correctPoint(p);
 
-        // 시작점 근처 → 자동 종료
         if(points.length > 2 && dist(points[0], p) < SNAP_DIST){
             finish();
             return;
@@ -123,6 +115,15 @@ canvas.addEventListener("click", function(e){
         redraw();
     }
 });
+
+function correctPoint(p){
+    for(let pt of points){
+        if(dist(pt, p) < SNAP_DIST){
+            return pt;
+        }
+    }
+    return p;
+}
 
 function snap(prev, current){
     if(!prev) return current;
@@ -143,30 +144,53 @@ function redraw(){
     let lineColor = document.getElementById("lineColor").value;
     let pointColor = document.getElementById("pointColor").value;
 
+    ctx.lineWidth = 3;
     ctx.strokeStyle = lineColor;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
+    ctx.fillStyle = "white";
+    ctx.font = "16px Arial"; // 🔥 글씨 키움
 
-    for(let i=0;i<points.length;i++){
-        let p = points[i];
+    // 🔴 기준선
+    if(scalePoints.length > 0){
+        for(let p of scalePoints){
+            drawPoint(p, "red");
+        }
 
-        if(i===0) ctx.moveTo(p.x,p.y);
-        else ctx.lineTo(p.x,p.y);
+        if(scalePoints.length === 2){
+            ctx.beginPath();
+            ctx.moveTo(scalePoints[0].x, scalePoints[0].y);
+            ctx.lineTo(scalePoints[1].x, scalePoints[1].y);
+            ctx.stroke();
 
-        drawPoint(p, pointColor);
-
-        if(i > 0){
-            let midX = (points[i-1].x + p.x) / 2;
-            let midY = (points[i-1].y + p.y) / 2;
-
-            ctx.fillStyle = "white";
-            ctx.fillText("변" + i, midX, midY);
+            ctx.fillText("기준선", 
+                (scalePoints[0].x + scalePoints[1].x)/2,
+                (scalePoints[0].y + scalePoints[1].y)/2);
         }
     }
 
-    ctx.stroke();
+    // 🔵 외곽선
+    if(points.length > 0){
+        ctx.beginPath();
 
-    // 결과 출력
+        for(let i=0;i<points.length;i++){
+            let p = points[i];
+
+            if(i===0) ctx.moveTo(p.x,p.y);
+            else ctx.lineTo(p.x,p.y);
+
+            drawPoint(p, pointColor);
+
+            if(i > 0){
+                let midX = (points[i-1].x + p.x) / 2;
+                let midY = (points[i-1].y + p.y) / 2;
+
+                ctx.fillText("변" + i, midX, midY);
+            }
+        }
+
+        ctx.stroke();
+    }
+
+    // 결과
     let out = "";
     for(let i=1;i<points.length;i++){
         let mm = dist(points[i-1], points[i]) * scale;
@@ -193,18 +217,28 @@ function finish(){
 }
 
 function undo(){
-    points.pop();
-    redraw();
+    // 🔥 기준선 단계 되돌리기
+    if(step === 2 && scalePoints.length > 0){
+        scalePoints.pop();
+        redraw();
+        return;
+    }
+
+    // 🔥 외곽선 되돌리기
+    if(step === 3 && points.length > 0){
+        points.pop();
+        redraw();
+    }
 }
 
 function dist(a,b){
     return Math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2);
 }
 
-function drawPoint(p, color="yellow"){
+function drawPoint(p, color){
     ctx.fillStyle = color;
     ctx.beginPath();
-    ctx.arc(p.x, p.y, 6, 0, Math.PI*2); // 점 크게
+    ctx.arc(p.x, p.y, 6, 0, Math.PI*2);
     ctx.fill();
 }
 </script>
