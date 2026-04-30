@@ -93,12 +93,23 @@ canvas.addEventListener("click", function(e){
         redraw();
 
         if(scalePoints.length === 2){
-            let px = dist(scalePoints[0], scalePoints[1]);
-            let real = prompt("기준 길이(mm)", "500");
-            scale = real / px;
+    // 🔥 이미 계산된 상태면 막기
+    if(step !== 2) return;
 
-            step = 3;
-            document.getElementById("step").innerText = "STEP 3: 외곽선 클릭";
+    let px = dist(scalePoints[0], scalePoints[1]);
+    let real = prompt("기준 길이(mm)", "500");
+
+    // 🔥 취소 또는 잘못 입력 방지
+    if(!real || isNaN(real)){
+        scalePoints.pop(); // 마지막 점 제거
+        redraw();
+        return;
+    }
+
+    scale = real / px;
+
+    step = 3;
+    document.getElementById("step").innerText = "STEP 3: 외곽선 클릭";
         }
     }
 
@@ -218,10 +229,12 @@ function finish(){
 
 function undo(){
     // 🔥 기준선 단계 되돌리기
-    if(step === 2 && scalePoints.length > 0){
+    if(step === 2){
+    if(scalePoints.length > 0){
         scalePoints.pop();
         redraw();
-        return;
+    }
+    return;
     }
 
     // 🔥 외곽선 되돌리기
