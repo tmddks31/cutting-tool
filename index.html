@@ -1,201 +1,576 @@
-<!DOCTYPE html>
-<html lang="ko">
-<head>
-<meta charset="UTF-8">
-<title>컷팅 도구 v16</title>
-<style>
-body { font-family: Arial; padding: 20px; background:#111; color:#fff; }
-canvas { border: 1px solid #555; width: 100%; max-width: 500px; touch-action: none; }
-button, select, input { margin-top: 8px; padding: 6px; }
-.control { margin-top:10px; }
-</style>
-</head>
-<body>
+import { useState, useRef, useEffect, useCallback } from "react";
 
-<h2>📐 컷팅 도구 v16</h2>
+// ── Constants ─────────────────────────────────────────────────
+const CUT_COLORS = ['#ef4444','#f59e0b','#22c55e','#a855f7','#06b6d4','#ec4899'];
+const dist = (a,b) => Math.sqrt((a.x-b.x)**2+(a.y-b.y)**2);
+const uid  = () => Math.random().toString(36).slice(2,8);
+const calcArea = pts => {
+  if(pts.length<3) return 0;
+  let a=0;
+  for(let i=0;i<pts.length;i++){const j=(i+1)%pts.length;a+=pts[i].x*pts[j].y-pts[j].x*pts[i].y;}
+  return Math.abs(a/2);
+};
 
-<input type="file" id="imageInput" accept="image/*"><br>
+// ── Styles ────────────────────────────────────────────────────
+const C = {
+  bg:'#0f0f0f', surf:'#181818', card:'#222', border:'#2c2c2c',
+  accent:'#3b82f6', accentDim:'#1e3a5f', accentTxt:'#60a5fa',
+  success:'#22c55e', warn:'#f59e0b', danger:'#ef4444',
+  txt:'#f0f0f0', muted:'#666', faint:'#3a3a3a'
+};
+const S = {
+  pg:  {background:C.bg,minHeight:'100vh',color:C.txt,fontFamily:'-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif',maxWidth:600,margin:'0 auto',paddingBottom:110},
+  hdr: {background:C.surf,padding:'13px 18px',borderBottom:`1px solid ${C.border}`,display:'flex',alignItems:'center',gap:12,position:'sticky',top:0,zIndex:100},
+  sec: {padding:20},
+  card:{background:C.card,borderRadius:14,padding:16,marginBottom:12},
+  inp: {width:'100%',padding:'12px 14px',borderRadius:10,border:`2px solid ${C.border}`,background:'#242424',color:C.txt,fontSize:16,boxSizing:'border-box',outline:'none'},
+  btnP:{width:'100%',padding:'15px',borderRadius:12,border:'none',background:C.accent,color:'#fff',fontSize:16,fontWeight:700,cursor:'pointer'},
+  btnS:{padding:'10px 18px',borderRadius:10,border:`2px solid ${C.border}`,background:C.card,color:'#ccc',fontSize:14,cursor:'pointer'},
+  btnG:{padding:'6px 12px',borderRadius:8,border:`1px solid ${C.border}`,background:'transparent',color:C.muted,fontSize:13,cursor:'pointer'},
+};
 
-<div class="control">
-기준선 색상 <input type="color" id="baseLineColor" value="#00aaff">
-기준점 크기 <input type="number" id="basePointSize" value="8">
-</div>
+export default function CuttingTool() {
+  const [step,      setStep]      = useState(1);
+  const [prodType,  setProdType]  = useState('puzzle');
+  const [tileSize,  setTileSize]  = useState(60);
+  const [img,       setImg]       = useState(null);     // {src,w,h}
+  const [scalePts,  setScalePts]  = useState([]);       // [{x,y},{x,y}]
+  const [scaleMm,   setScaleMm]   = useState('');
+  const [mmPerPx,   setMmPerPx]   = useState(null);
+  const [pieces,    setPieces]    = useState([]);        // [{id,name,pts,closed}]
+  const [activeId,  setActiveId]  = useState(null);
+  const [hoverPt,   setHoverPt]   = useState(null);
+  const [dragging,  setDragging]  = useState(null);     // {pid,idx}
+  const [toast,     setToast]     = useState(null);
 
-<div class="control">
-컷팅선 색상 <input type="color" id="cutLineColor" value="#ff4444">
-컷팅점 크기 <input type="number" id="cutPointSize" value="10">
-</div>
+  const canvasRef = useRef(null);
+  const imgElRef  = useRef(null);
+  const fileRef   = useRef(null);
 
-<p id="step">STEP 1: 사진 선택</p>
+  // ── Helpers ─────────────────────────────────────────────────
+  const showToast = msg => { setToast(msg); setTimeout(()=>setToast(null),2200); };
 
-<canvas id="canvas"></canvas>
+  const s2c = useCallback((sx,sy) => {
+    const c=canvasRef.current; if(!c||!img) return {x:0,y:0};
+    const r=c.getBoundingClientRect();
+    return {x:(sx-r.left)*(img.w/r.width), y:(sy-r.top)*(img.h/r.height)};
+  },[img]);
 
-<br>
-<button onclick="confirmPoint()">점 확정</button>
-<button onclick="undo()">되돌리기</button>
+  const screenDist = useCallback((cA,cB)=>{
+    const c=canvasRef.current; if(!c||!img) return 9999;
+    return dist(cA,cB)*(c.getBoundingClientRect().width/img.w);
+  },[img]);
 
-<h3>결과</h3>
-<div id="output"></div>
+  const evtPos = e => e.touches
+    ? {x:e.touches[0].clientX, y:e.touches[0].clientY}
+    : {x:e.clientX,            y:e.clientY};
 
-<script>
-let canvas = document.getElementById("canvas");
-let ctx = canvas.getContext("2d");
-
-let img = new Image();
-
-let step = 1;
-let scale = 1;
-
-let scalePoints = [];
-let points = [];
-
-let tempPoint = null;
-let isDragging = false;
-
-document.getElementById("imageInput").addEventListener("change", e=>{
-    let file = e.target.files[0];
-    let url = URL.createObjectURL(file);
-
-    img.onload = ()=>{
-        canvas.width = img.width;
-        canvas.height = img.height;
-        step = 2;
-        scalePoints = [];
-        points = [];
-        redraw();
-        document.getElementById("step").innerText = "STEP 2: 기준점 설정 (드래그 후 확정)";
+  // ── File load ────────────────────────────────────────────────
+  const onFile = e => {
+    const f=e.target.files[0]; if(!f) return;
+    const url=URL.createObjectURL(f);
+    const im=new Image();
+    im.onload=()=>{
+      imgElRef.current=im;
+      setImg({src:url,w:im.naturalWidth,h:im.naturalHeight});
+      setScalePts([]); setScaleMm(''); setMmPerPx(null);
+      setPieces([]); setActiveId(null);
+      setStep(3);
     };
+    im.src=url;
+  };
 
-    img.src = url;
-});
+  // ── Canvas draw ──────────────────────────────────────────────
+  useEffect(()=>{
+    const canvas=canvasRef.current;
+    if(!canvas||!img||!imgElRef.current) return;
+    if(canvas.width!==img.w||canvas.height!==img.h){canvas.width=img.w;canvas.height=img.h;}
+    const ctx=canvas.getContext('2d');
+    ctx.clearRect(0,0,img.w,img.h);
+    ctx.drawImage(imgElRef.current,0,0);
 
-function getPos(e){
-    let rect = canvas.getBoundingClientRect();
-    return {
-        x: (e.touches ? e.touches[0].clientX : e.clientX - rect.left) * (canvas.width / rect.width),
-        y: (e.touches ? e.touches[0].clientY : e.clientY - rect.top) * (canvas.height / rect.height)
-    };
-}
+    const bs=Math.max(img.w,img.h)*0.013;
 
-canvas.addEventListener("mousedown", start);
-canvas.addEventListener("mousemove", move);
-canvas.addEventListener("mouseup", end);
-
-canvas.addEventListener("touchstart", start);
-canvas.addEventListener("touchmove", move);
-canvas.addEventListener("touchend", end);
-
-function start(e){
-    isDragging = true;
-    tempPoint = getPos(e);
-    redraw();
-}
-
-function move(e){
-    if(!isDragging) return;
-    tempPoint = getPos(e);
-    redraw();
-}
-
-function end(){
-    isDragging = false;
-}
-
-function confirmPoint(){
-    if(!tempPoint) return;
-
-    if(step === 2){
-        scalePoints.push({...tempPoint});
-        if(scalePoints.length === 2){
-            let px = dist(scalePoints[0], scalePoints[1]);
-            let real = prompt("기준 길이(mm)", "500");
-            scale = real / px;
-
-            step = 3;
-            document.getElementById("step").innerText = "STEP 3: 컷팅점 설정 (드래그 → 확정)";
+    // ── Scale line ──
+    if(scalePts.length>0){
+      const endPt=scalePts[1]||(step===3?hoverPt:null);
+      ctx.strokeStyle='#60a5fa'; ctx.lineWidth=bs*0.4; ctx.setLineDash([bs,bs*0.5]);
+      ctx.beginPath(); ctx.moveTo(scalePts[0].x,scalePts[0].y);
+      if(endPt) ctx.lineTo(endPt.x,endPt.y);
+      ctx.stroke(); ctx.setLineDash([]);
+      scalePts.forEach((p,i)=>{
+        ctx.fillStyle='#60a5fa'; ctx.beginPath(); ctx.arc(p.x,p.y,bs,0,Math.PI*2); ctx.fill();
+        if(i===1&&mmPerPx){
+          const lbl=`기준: ${scaleMm}mm`;
+          ctx.font=`bold ${bs*1.6}px Arial`;
+          const tw=ctx.measureText(lbl).width;
+          ctx.fillStyle='rgba(0,0,0,0.75)'; ctx.fillRect(p.x+bs*1.5,p.y-bs*2.4,tw+10,bs*2.6);
+          ctx.fillStyle='#60a5fa'; ctx.fillText(lbl,p.x+bs*1.5+5,p.y-bs*0.4);
         }
-    }
-    else if(step === 3){
-        points.push({...tempPoint});
+      });
     }
 
-    tempPoint = null;
-    redraw();
-}
+    // ── Pieces ──
+    pieces.forEach((piece,pi)=>{
+      if(!piece.pts.length) return;
+      const color=CUT_COLORS[pi%CUT_COLORS.length];
+      const isActive=piece.id===activeId;
 
-function undo(){
-    if(step === 2 && scalePoints.length > 0){
-        scalePoints.pop();
-    }
-    else if(step === 3 && points.length > 0){
-        points.pop();
-    }
-    redraw();
-}
+      if(piece.closed){
+        ctx.fillStyle=color+'28'; ctx.beginPath();
+        piece.pts.forEach((p,i)=>i===0?ctx.moveTo(p.x,p.y):ctx.lineTo(p.x,p.y));
+        ctx.closePath(); ctx.fill();
+      }
 
-function redraw(){
-    ctx.clearRect(0,0,canvas.width,canvas.height);
-    ctx.drawImage(img,0,0);
+      ctx.strokeStyle=color; ctx.lineWidth=isActive?bs*0.55:bs*0.3; ctx.lineJoin='round';
+      ctx.beginPath();
+      piece.pts.forEach((p,i)=>i===0?ctx.moveTo(p.x,p.y):ctx.lineTo(p.x,p.y));
+      if(piece.closed) ctx.closePath();
+      else if(isActive&&hoverPt&&step===4) ctx.lineTo(hoverPt.x,hoverPt.y);
+      ctx.stroke();
 
-    let baseColor = document.getElementById("baseLineColor").value;
-    let cutColor = document.getElementById("cutLineColor").value;
-    let baseSize = document.getElementById("basePointSize").value;
-    let cutSize = document.getElementById("cutPointSize").value;
+      piece.pts.forEach((p,i)=>{
+        const isFirst=i===0;
+        ctx.beginPath(); ctx.arc(p.x,p.y,isFirst?bs*1.3:bs*0.9,0,Math.PI*2);
+        ctx.fillStyle=isFirst?'#fff':color; ctx.fill();
+        if(isFirst){ctx.strokeStyle=color;ctx.lineWidth=bs*0.4;ctx.stroke();}
+      });
 
-    ctx.lineWidth = 3;
-    ctx.font = "20px Arial";
-
-    // 기준선
-    ctx.strokeStyle = baseColor;
-    ctx.beginPath();
-    scalePoints.forEach((p,i)=>{
-        drawPoint(p, baseColor, baseSize);
-        if(i===0) ctx.moveTo(p.x,p.y);
-        else ctx.lineTo(p.x,p.y);
-    });
-    ctx.stroke();
-
-    // 컷팅선
-    ctx.strokeStyle = cutColor;
-    ctx.beginPath();
-    points.forEach((p,i)=>{
-        drawPoint(p, cutColor, cutSize);
-        if(i===0) ctx.moveTo(p.x,p.y);
-        else{
-            ctx.lineTo(p.x,p.y);
-
-            // 치수 표시
-            let d = dist(points[i-1], p) * scale;
-            ctx.fillStyle="#fff";
-            ctx.fillText(d.toFixed(1)+"mm", (p.x+points[i-1].x)/2, (p.y+points[i-1].y)/2);
+      if(mmPerPx){
+        ctx.textAlign='center'; ctx.font=`bold ${bs*1.45}px Arial`;
+        const ePts=piece.closed?[...piece.pts,piece.pts[0]]:piece.pts;
+        for(let i=1;i<ePts.length;i++){
+          const a=ePts[i-1],b=ePts[i];
+          const mm=dist(a,b)*mmPerPx;
+          const mx=(a.x+b.x)/2,my=(a.y+b.y)/2;
+          const txt=`${mm.toFixed(0)}mm`;
+          const tw=ctx.measureText(txt).width;
+          ctx.fillStyle='rgba(0,0,0,0.72)'; ctx.fillRect(mx-tw/2-4,my-bs*1.9,tw+8,bs*2.1);
+          ctx.fillStyle='#fff'; ctx.fillText(txt,mx,my-bs*0.25);
         }
+        if(piece.closed){
+          const cx=piece.pts.reduce((s,p)=>s+p.x,0)/piece.pts.length;
+          const cy=piece.pts.reduce((s,p)=>s+p.y,0)/piece.pts.length;
+          const a2=calcArea(piece.pts)*mmPerPx*mmPerPx;
+          const txt=`${(a2/1e6).toFixed(3)}m²`;
+          ctx.font=`bold ${bs*1.7}px Arial`;
+          const tw=ctx.measureText(txt).width;
+          ctx.fillStyle='rgba(0,0,0,0.8)'; ctx.fillRect(cx-tw/2-6,cy-bs*2.1,tw+12,bs*2.5);
+          ctx.fillStyle=color; ctx.fillText(txt,cx,cy);
+        }
+        ctx.textAlign='left';
+      }
     });
-    ctx.stroke();
 
-    // 임시 점
-    if(tempPoint){
-        drawPoint(tempPoint, "#00ff00", 12);
+    if(hoverPt&&(step===3||step===4)){
+      ctx.fillStyle='rgba(255,255,255,0.45)'; ctx.beginPath();
+      ctx.arc(hoverPt.x,hoverPt.y,bs*0.55,0,Math.PI*2); ctx.fill();
     }
+  },[img,scalePts,pieces,hoverPt,mmPerPx,step,activeId,scaleMm]);
 
-    // 결과
-    let out="";
-    for(let i=1;i<points.length;i++){
-        out += `변 ${i}: ${(dist(points[i-1], points[i])*scale).toFixed(1)} mm<br>`;
+  // ── Pointer events ────────────────────────────────────────────
+  const onDown = e => {
+    e.preventDefault();
+    const cp=s2c(...Object.values(evtPos(e)));
+    if(step===3){
+      if(scalePts.length<2) setScalePts(p=>[...p,{...cp}]);
+      return;
     }
-    document.getElementById("output").innerHTML = out;
-}
+    if(step===4){
+      const ap=pieces.find(p=>p.id===activeId); if(!ap) return;
+      for(let i=0;i<ap.pts.length;i++){
+        if(screenDist(ap.pts[i],cp)<22){setDragging({pid:activeId,idx:i});return;}
+      }
+      if(ap.closed) return;
+      if(ap.pts.length>=3&&screenDist(ap.pts[0],cp)<26){
+        setPieces(p=>p.map(x=>x.id===activeId?{...x,closed:true}:x));
+        showToast('✅ 도형이 완성됐어요'); return;
+      }
+      setPieces(p=>p.map(x=>x.id===activeId?{...x,pts:[...x.pts,{...cp}]}:x));
+    }
+  };
+  const onMove = e => {
+    e.preventDefault();
+    const cp=s2c(...Object.values(evtPos(e)));
+    setHoverPt({...cp});
+    if(dragging) setPieces(p=>p.map(x=>{
+      if(x.id!==dragging.pid) return x;
+      const pts=[...x.pts]; pts[dragging.idx]={...cp}; return {...x,pts};
+    }));
+  };
+  const onUp = ()=>setDragging(null);
 
-function drawPoint(p,color,size){
-    ctx.fillStyle=color;
-    ctx.beginPath();
-    ctx.arc(p.x,p.y,size,0,Math.PI*2);
-    ctx.fill();
-}
+  const canvasEvts={onMouseDown:onDown,onMouseMove:onMove,onMouseUp:onUp,
+    onTouchStart:onDown,onTouchMove:onMove,onTouchEnd:onUp};
 
-function dist(a,b){
-    return Math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2);
-}
-</script>
+  // ── Actions ───────────────────────────────────────────────────
+  const confirmScale = ()=>{
+    if(scalePts.length!==2||!scaleMm||+scaleMm<=0) return showToast('끝점과 길이를 모두 입력하세요');
+    const mpp=+scaleMm/dist(scalePts[0],scalePts[1]);
+    setMmPerPx(mpp);
+    const id=uid();
+    setPieces([{id,name:'영역 1',pts:[],closed:false}]); setActiveId(id);
+    setStep(4); showToast('기준 설정 완료 ✓');
+  };
+  const addPiece = ()=>{
+    const id=uid(),n=pieces.length+1;
+    setPieces(p=>[...p,{id,name:`영역 ${n}`,pts:[],closed:false}]); setActiveId(id);
+  };
+  const undo = ()=>{
+    if(step===3){setScalePts(p=>p.slice(0,-1));return;}
+    if(step===4) setPieces(p=>p.map(x=>{
+      if(x.id!==activeId) return x;
+      if(x.closed) return {...x,closed:false};
+      return {...x,pts:x.pts.slice(0,-1)};
+    }));
+  };
+  const resetScale = ()=>{setScalePts([]);setScaleMm('');setMmPerPx(null);};
 
-</body>
-</html>
+  // ── Data ──────────────────────────────────────────────────────
+  const getMeasurements = () => !mmPerPx ? [] : pieces.map((piece,i)=>{
+    const ePts=piece.closed?[...piece.pts,piece.pts[0]]:piece.pts;
+    const sides=[]; for(let j=1;j<ePts.length;j++) sides.push(dist(ePts[j-1],ePts[j])*mmPerPx);
+    const areaMm2=piece.closed?calcArea(piece.pts)*mmPerPx*mmPerPx:0;
+    return {name:piece.name,sides,areaMm2,closed:piece.closed,piece};
+  });
+  const getTiles = piece => {
+    if(!piece.closed||!mmPerPx||!piece.pts.length) return null;
+    const xs=piece.pts.map(p=>p.x*mmPerPx),ys=piece.pts.map(p=>p.y*mmPerPx);
+    const cols=Math.ceil((Math.max(...xs)-Math.min(...xs))/tileSize);
+    const rows=Math.ceil((Math.max(...ys)-Math.min(...ys))/tileSize);
+    return {cols,rows,total:cols*rows};
+  };
+
+  // ── SVG Export ─────────────────────────────────────────────────
+  const exportSVG = ()=>{
+    if(!mmPerPx) return;
+    const allPts=pieces.flatMap(p=>p.pts.map(pt=>({x:pt.x*mmPerPx,y:pt.y*mmPerPx})));
+    if(!allPts.length) return showToast('내보낼 영역이 없어요');
+    const pad=15;
+    const minX=Math.min(...allPts.map(p=>p.x))-pad, minY=Math.min(...allPts.map(p=>p.y))-pad;
+    const maxX=Math.max(...allPts.map(p=>p.x))+pad, maxY=Math.max(...allPts.map(p=>p.y))+pad;
+    const W=maxX-minX, H=maxY-minY;
+    let body='';
+    pieces.forEach((piece,pi)=>{
+      if(piece.pts.length<2) return;
+      const color=CUT_COLORS[pi%CUT_COLORS.length];
+      const pd=piece.pts.map(p=>`${(p.x*mmPerPx-minX).toFixed(2)},${(p.y*mmPerPx-minY).toFixed(2)}`).join(' L ');
+      body+=`<path d="M ${pd}${piece.closed?' Z':''}" fill="${piece.closed?color+'22':'none'}" stroke="${color}" stroke-width="0.5" stroke-linejoin="round"/>\n`;
+      const ePts=piece.closed?[...piece.pts,piece.pts[0]]:piece.pts;
+      for(let i=1;i<ePts.length;i++){
+        const a=ePts[i-1],b=ePts[i];
+        const mm=dist(a,b)*mmPerPx;
+        const mx=((a.x+b.x)/2*mmPerPx-minX).toFixed(1),my=((a.y+b.y)/2*mmPerPx-minY-1.5).toFixed(1);
+        body+=`<text x="${mx}" y="${my}" font-size="3" fill="${color}" text-anchor="middle" font-family="Arial">${mm.toFixed(0)}mm</text>\n`;
+      }
+    });
+    const svg=`<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="${W.toFixed(1)}mm" height="${H.toFixed(1)}mm" viewBox="0 0 ${W.toFixed(1)} ${H.toFixed(1)}">\n${body}</svg>`;
+    const a=document.createElement('a');
+    a.href=URL.createObjectURL(new Blob([svg],{type:'image/svg+xml'}));
+    a.download='cutting-guide.svg'; a.click();
+    showToast('SVG 다운로드 완료 ✓');
+  };
+
+  const measurements=getMeasurements();
+  const ap=pieces.find(p=>p.id===activeId);
+
+  // ── Render ────────────────────────────────────────────────────
+  const StepDot = ({n,label}) => (
+    <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:3}}>
+      <div style={{width:26,height:26,borderRadius:'50%',
+        background:step>n?C.success:step===n?C.accent:C.faint,
+        border:step===n?`2px solid ${C.accentTxt}`:'2px solid transparent',
+        display:'flex',alignItems:'center',justifyContent:'center',
+        fontSize:10,fontWeight:700,color:step>=n?'#fff':C.muted,transition:'all .3s'}}>
+        {step>n?'✓':n}
+      </div>
+      <div style={{fontSize:9,color:step===n?C.accentTxt:C.muted}}>{label}</div>
+    </div>
+  );
+
+  return (
+    <div style={S.pg}>
+      {/* ── HEADER ── */}
+      <div style={S.hdr}>
+        <span style={{fontSize:22}}>✂️</span>
+        <div>
+          <div style={{fontWeight:800,fontSize:16,letterSpacing:-0.5}}>매트 컷팅 도구</div>
+          <div style={{fontSize:10,color:C.muted}}>현장 시공 보조 시스템 · Phase 1</div>
+        </div>
+        <div style={{marginLeft:'auto',display:'flex',gap:8,alignItems:'center'}}>
+          {[['제품',1],['사진',2],['기준',3],['설정',4],['출력',5]].map(([l,n])=><StepDot key={n} n={n} label={l}/>)}
+        </div>
+      </div>
+
+      {/* ── TOAST ── */}
+      {toast&&(
+        <div style={{position:'fixed',top:70,left:'50%',transform:'translateX(-50%)',
+          background:'#1a1a1a',border:`1px solid ${C.border}`,borderRadius:30,padding:'10px 20px',
+          fontSize:14,zIndex:999,boxShadow:'0 4px 20px #000a',whiteSpace:'nowrap'}}>
+          {toast}
+        </div>
+      )}
+
+      {/* ══ STEP 1 ══ */}
+      {step===1&&(
+        <div style={S.sec}>
+          <h2 style={{fontSize:22,fontWeight:800,marginBottom:6,letterSpacing:-0.5}}>제품 타입 선택</h2>
+          <p style={{color:C.muted,fontSize:14,marginBottom:24}}>시공할 매트 종류를 먼저 선택해주세요</p>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:20}}>
+            {[
+              {id:'puzzle',icon:'🧩',label:'퍼즐형',desc:'조각 타일 조립 방식\n50×50 / 60×60mm'},
+              {id:'roll',  icon:'📜',label:'롤형',  desc:'장판처럼 연속 시트\n돌돌 마는 형태'},
+            ].map(t=>(
+              <button key={t.id} onClick={()=>{setProdType(t.id);setStep(2);}} style={{
+                background:prodType===t.id?C.accentDim:C.card,
+                border:`2px solid ${prodType===t.id?C.accent:C.border}`,
+                borderRadius:16,padding:'28px 16px',cursor:'pointer',color:C.txt,textAlign:'center',transition:'all .2s'
+              }}>
+                <div style={{fontSize:44,marginBottom:10}}>{t.icon}</div>
+                <div style={{fontWeight:700,fontSize:17}}>{t.label}</div>
+                <div style={{color:C.muted,fontSize:12,marginTop:6,lineHeight:1.6,whiteSpace:'pre-line'}}>{t.desc}</div>
+              </button>
+            ))}
+          </div>
+          {prodType==='puzzle'&&(
+            <div style={S.card}>
+              <div style={{fontWeight:600,marginBottom:12,fontSize:14}}>타일 크기 (mm)</div>
+              <div style={{display:'flex',gap:8}}>
+                {[50,60].map(s=>(
+                  <button key={s} onClick={()=>setTileSize(s)} style={{
+                    flex:1,padding:'12px',borderRadius:10,cursor:'pointer',fontWeight:700,
+                    border:`2px solid ${tileSize===s?C.accent:C.border}`,
+                    background:tileSize===s?C.accentDim:'#2a2a2a',
+                    color:tileSize===s?C.accentTxt:'#888'
+                  }}>{s}×{s}</button>
+                ))}
+                <input type="number" placeholder="직접입력" onChange={e=>setTileSize(+e.target.value||60)}
+                  style={{...S.inp,flex:1,padding:'12px',textAlign:'center'}}/>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ══ STEP 2 ══ */}
+      {step===2&&(
+        <div style={S.sec}>
+          <button onClick={()=>setStep(1)} style={S.btnG}>← 뒤로</button>
+          <h2 style={{fontSize:22,fontWeight:800,margin:'16px 0 6px'}}>현장 사진 업로드</h2>
+          <p style={{color:C.muted,fontSize:14,marginBottom:24}}>시공 공간을 위에서 전체가 나오게 촬영해주세요</p>
+          <input type="file" accept="image/*" ref={fileRef} onChange={onFile} style={{display:'none'}}/>
+          <div style={{display:'grid',gap:12,marginBottom:20}}>
+            <button onClick={()=>{fileRef.current.setAttribute('capture','environment');fileRef.current.click();}} style={{
+              ...S.btnP,display:'flex',alignItems:'center',justifyContent:'center',gap:10,padding:'20px'
+            }}><span style={{fontSize:22}}>📷</span>카메라로 촬영</button>
+            <button onClick={()=>{fileRef.current.removeAttribute('capture');fileRef.current.click();}} style={{
+              background:C.card,border:`2px solid ${C.border}`,borderRadius:12,padding:'20px',
+              color:'#ccc',fontSize:16,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:10
+            }}><span style={{fontSize:22}}>🖼️</span>갤러리에서 선택</button>
+          </div>
+          <div style={S.card}>
+            <div style={{fontSize:13,color:C.muted,lineHeight:1.9}}>
+              💡 <strong style={{color:'#ccc'}}>정확도 높이는 팁</strong><br/>
+              • 공간 전체가 나오게 위에서 찍기<br/>
+              • <strong style={{color:C.txt}}>기준 물체</strong> 포함 필수 (문폭 900mm, 벽면 타일 등)<br/>
+              • 수평·수직으로 촬영하면 정확도 향상<br/>
+              • 아이폰 측정 앱으로 기준 치수 미리 확인 후 사용
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ══ STEP 3 ══ */}
+      {step===3&&img&&(
+        <div>
+          <div style={{padding:'12px 18px',background:C.surf,borderBottom:`1px solid ${C.border}`}}>
+            <button onClick={()=>setStep(2)} style={S.btnG}>← 뒤로</button>
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginTop:8}}>
+              <div>
+                <div style={{fontWeight:700,fontSize:16}}>기준선 설정</div>
+                <div style={{fontSize:12,color:C.muted,marginTop:2}}>
+                  {scalePts.length===0&&'📍 기준이 될 시작점을 탭하세요'}
+                  {scalePts.length===1&&'📍 기준선 끝점을 탭하세요'}
+                  {scalePts.length===2&&'📏 아래에 실제 길이를 입력하세요'}
+                </div>
+              </div>
+              {scalePts.length>0&&<button onClick={resetScale} style={S.btnG}>초기화</button>}
+            </div>
+          </div>
+          <canvas ref={canvasRef} style={{display:'block',width:'100%',touchAction:'none',cursor:'crosshair'}} {...canvasEvts}/>
+          <div style={{padding:16}}>
+            {scalePts.length===2&&(
+              <div style={{...S.card,border:`2px solid ${C.accent}33`,marginBottom:12}}>
+                <div style={{fontWeight:600,marginBottom:10}}>기준선 실제 길이 입력</div>
+                <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:12}}>
+                  <input type="number" value={scaleMm} onChange={e=>setScaleMm(e.target.value)}
+                    placeholder="mm 단위로 입력" autoFocus
+                    style={{...S.inp,border:`2px solid ${C.accent}`,fontSize:22,fontWeight:700,flex:1}}/>
+                  <span style={{color:C.muted,fontWeight:600,fontSize:16}}>mm</span>
+                </div>
+                <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
+                  {[{v:900,l:'문폭'},{v:800,l:'문틀포함'},{v:600,l:'창문폭'},{v:300,l:'타일'},{v:1000,l:'1m'},{v:2000,l:'2m'}].map(({v,l})=>(
+                    <button key={v} onClick={()=>setScaleMm(String(v))} style={{
+                      padding:'7px 12px',borderRadius:8,cursor:'pointer',fontSize:12,
+                      border:`1px solid ${scaleMm==v?C.accent:C.border}`,
+                      background:scaleMm==v?C.accentDim:'#2a2a2a',
+                      color:scaleMm==v?C.accentTxt:C.muted
+                    }}>{l} {v}</button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {scalePts.length===2&&scaleMm&&+scaleMm>0&&(
+              <button onClick={confirmScale} style={S.btnP}>기준 확정 → 영역 설정으로</button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ══ STEP 4 ══ */}
+      {step===4&&img&&(
+        <div>
+          <div style={{padding:'12px 18px',background:C.surf,borderBottom:`1px solid ${C.border}`,display:'flex',alignItems:'center',justifyContent:'space-between'}}>
+            <div>
+              <div style={{fontWeight:700,fontSize:16}}>컷팅 영역 설정</div>
+              <div style={{fontSize:12,color:C.muted,marginTop:2}}>
+                {!ap?.closed?'탭으로 점 추가 · 첫 점 근처 탭 시 도형 완성':'점을 드래그해서 위치 조정'}
+              </div>
+            </div>
+            <div style={{display:'flex',gap:8}}>
+              <button onClick={undo} style={S.btnG}>↩ 되돌리기</button>
+              <button onClick={()=>setStep(3)} style={S.btnG}>기준 재설정</button>
+            </div>
+          </div>
+          <canvas ref={canvasRef} style={{display:'block',width:'100%',touchAction:'none',cursor:'crosshair'}} {...canvasEvts}/>
+          <div style={{padding:16}}>
+            {/* Piece list */}
+            <div style={S.card}>
+              <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
+                <span style={{fontWeight:600}}>컷팅 영역 목록</span>
+                <button onClick={addPiece} style={{...S.btnG,color:C.accentTxt,border:`1px solid ${C.accent}33`}}>+ 영역 추가</button>
+              </div>
+              {pieces.map((piece,i)=>(
+                <div key={piece.id} onClick={()=>setActiveId(piece.id)} style={{
+                  display:'flex',alignItems:'center',gap:10,
+                  background:activeId===piece.id?`${C.accent}12`:'transparent',
+                  border:`1px solid ${activeId===piece.id?C.accent:C.border}`,
+                  borderRadius:10,padding:'10px 12px',marginBottom:6,cursor:'pointer',transition:'all .15s'
+                }}>
+                  <div style={{width:10,height:10,borderRadius:'50%',background:CUT_COLORS[i%CUT_COLORS.length],flexShrink:0}}/>
+                  <span style={{flex:1,fontSize:14}}>{piece.name}</span>
+                  <span style={{fontSize:12,color:C.muted}}>{piece.closed?'✅ 완성':`${piece.pts.length}점`}</span>
+                  <span onClick={e=>{e.stopPropagation();setPieces(p=>p.filter(x=>x.id!==piece.id));}} style={{color:C.faint,padding:'0 4px',cursor:'pointer'}}>✕</span>
+                </div>
+              ))}
+            </div>
+
+            {/* Measurements */}
+            {measurements.some(m=>m.sides.length>0)&&(
+              <div style={S.card}>
+                <div style={{fontWeight:600,marginBottom:12}}>📏 실시간 치수</div>
+                {measurements.map((m,i)=>m.sides.length>0&&(
+                  <div key={i} style={{marginBottom:14}}>
+                    <div style={{fontSize:13,color:CUT_COLORS[i%CUT_COLORS.length],fontWeight:600,marginBottom:8}}>{m.name}</div>
+                    <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6}}>
+                      {m.sides.map((s,j)=>(
+                        <div key={j} style={{background:'#2a2a2a',borderRadius:8,padding:'8px 12px'}}>
+                          <div style={{fontSize:10,color:C.muted}}>변 {j+1}</div>
+                          <div style={{fontWeight:700,fontSize:17}}>{s.toFixed(0)}<span style={{fontSize:11,color:C.muted}}>mm</span></div>
+                          <div style={{fontSize:10,color:C.muted}}>{(s/10).toFixed(1)}cm</div>
+                        </div>
+                      ))}
+                      {m.closed&&(
+                        <div style={{background:`${C.accent}12`,border:`1px solid ${C.accent}33`,borderRadius:8,padding:'8px 12px'}}>
+                          <div style={{fontSize:10,color:C.muted}}>면적</div>
+                          <div style={{fontWeight:700,fontSize:17,color:C.accentTxt}}>{(m.areaMm2/1e6).toFixed(3)}<span style={{fontSize:11}}>m²</span></div>
+                        </div>
+                      )}
+                    </div>
+                    {prodType==='puzzle'&&m.closed&&(()=>{const t=getTiles(m.piece);return t?<div style={{fontSize:12,color:C.muted,marginTop:6}}>타일 {tileSize}×{tileSize}: 약 <strong style={{color:C.txt}}>{t.total}장</strong> ({t.cols}×{t.rows})</div>:null;})()}
+                  </div>
+                ))}
+              </div>
+            )}
+            <button onClick={()=>setStep(5)} style={{...S.btnP,background:C.success}}>결과 출력 →</button>
+          </div>
+
+          {/* Bottom action bar */}
+          {ap&&!ap.closed&&ap.pts.length>=3&&(
+            <div style={{position:'fixed',bottom:0,left:0,right:0,background:C.surf,borderTop:`1px solid ${C.border}`,padding:'12px 18px',maxWidth:600,margin:'0 auto',zIndex:50}}>
+              <div style={{display:'flex',gap:8}}>
+                <button onClick={undo} style={{...S.btnS,flex:1}}>↩ 되돌리기</button>
+                <button onClick={()=>{setPieces(p=>p.map(x=>x.id===activeId?{...x,closed:true}:x));showToast('✅ 도형 완성!');}} style={{...S.btnP,flex:2}}>✅ 도형 완성하기</button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ══ STEP 5 ══ */}
+      {step===5&&(
+        <div style={S.sec}>
+          <button onClick={()=>setStep(4)} style={S.btnG}>← 뒤로</button>
+          <h2 style={{fontSize:22,fontWeight:800,margin:'16px 0 6px'}}>컷팅 가이드</h2>
+          <p style={{color:C.muted,fontSize:14,marginBottom:20}}>치수를 확인하고 파일을 저장하세요</p>
+
+          {measurements.length===0&&(
+            <div style={{...S.card,textAlign:'center',padding:40,color:C.muted}}>설정된 영역이 없어요</div>
+          )}
+
+          {measurements.map((m,i)=>m.sides.length>0&&(
+            <div key={i} style={S.card}>
+              <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:14}}>
+                <div style={{width:12,height:12,borderRadius:'50%',background:CUT_COLORS[i%CUT_COLORS.length]}}/>
+                <span style={{fontWeight:700,fontSize:16}}>{m.name}</span>
+                {m.closed&&<span style={{marginLeft:'auto',fontSize:11,color:C.success,background:'#14532d44',padding:'3px 10px',borderRadius:999}}>완성됨</span>}
+              </div>
+              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
+                {m.sides.map((s,j)=>(
+                  <div key={j} style={{background:'#2a2a2a',borderRadius:10,padding:'14px'}}>
+                    <div style={{fontSize:11,color:C.muted,marginBottom:3}}>변 {j+1}</div>
+                    <div style={{fontWeight:800,fontSize:24}}>{s.toFixed(0)}<span style={{fontSize:13,color:C.muted,marginLeft:2}}>mm</span></div>
+                    <div style={{fontSize:11,color:C.muted}}>{(s/10).toFixed(1)} cm</div>
+                  </div>
+                ))}
+                {m.closed&&(
+                  <div style={{background:`${C.accent}12`,border:`1px solid ${C.accent}33`,borderRadius:10,padding:'14px'}}>
+                    <div style={{fontSize:11,color:C.muted,marginBottom:3}}>면적</div>
+                    <div style={{fontWeight:800,fontSize:22,color:C.accentTxt}}>{(m.areaMm2/1e6).toFixed(4)}<span style={{fontSize:12,marginLeft:2}}>m²</span></div>
+                    <div style={{fontSize:11,color:C.muted}}>{m.areaMm2.toFixed(0)} mm²</div>
+                  </div>
+                )}
+                {prodType==='puzzle'&&m.closed&&(()=>{const t=getTiles(m.piece);return t?(
+                  <div style={{background:`${C.success}12`,border:`1px solid ${C.success}33`,borderRadius:10,padding:'14px'}}>
+                    <div style={{fontSize:11,color:C.muted,marginBottom:3}}>필요 타일 ({tileSize}mm)</div>
+                    <div style={{fontWeight:800,fontSize:22,color:C.success}}>{t.total}<span style={{fontSize:13,color:C.muted,marginLeft:2}}>장</span></div>
+                    <div style={{fontSize:11,color:C.muted}}>{t.cols}열 × {t.rows}행</div>
+                  </div>
+                ):null;})()}
+              </div>
+            </div>
+          ))}
+
+          <div style={{display:'grid',gap:10,marginTop:8}}>
+            <button onClick={exportSVG} style={{...S.btnP,display:'flex',alignItems:'center',justifyContent:'center',gap:8}}>
+              <span>⬇️</span>SVG 다운로드 (CNC / 칼날 커터용)
+            </button>
+            <button onClick={()=>window.print()} style={{...S.btnS,width:'100%',padding:'14px',display:'flex',alignItems:'center',justifyContent:'center',gap:8}}>
+              <span>🖨️</span>인쇄 (컷팅 가이드 출력)
+            </button>
+          </div>
+
+          <div style={{...S.card,marginTop:16}}>
+            <div style={{fontSize:12,color:C.muted,lineHeight:1.9}}>
+              📌 <strong style={{color:'#aaa'}}>SVG 파일 활용법</strong><br/>
+              • 실제 mm 단위 1:1 비율로 저장됩니다<br/>
+              • 대부분의 CNC·칼날 커터 소프트웨어에서 직접 사용 가능<br/>
+              • <strong style={{color:C.txt}}>Inkscape</strong> (무료) 로 열어서 확인 및 편집 가능<br/>
+              • 다음 버전: AI 자동 인식 + 커터 직접 연동
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
