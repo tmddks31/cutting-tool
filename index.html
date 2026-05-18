@@ -3,9 +3,15 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-<title>매트 컷팅 도구 v1.3</title>
+<title>매트 컷팅 도구</title>
+<meta name="application-name" content="매트컷팅">
+<meta name="description" content="현장 측정 · G-code 생성 · CNC 커팅 자동화">
 <meta name="theme-color" content="#0f0f0f">
+<meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="매트컷팅">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="apple-touch-icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' fill='%230f0f0f' rx='22'/><text y='72' x='50' text-anchor='middle' font-size='58'>✂️</text></svg>">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.development.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.development.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
@@ -13,107 +19,265 @@
 *{box-sizing:border-box;margin:0;padding:0;}
 body{background:#0f0f0f;color:#f0f0f0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;overscroll-behavior:none;}
 input:focus{outline:2px solid #3b82f6!important;}
+input[type=range]{width:100%;accent-color:#3b82f6;}
 @media print{.no-print{display:none!important;}body{background:#fff;color:#000;}}
 </style>
 </head>
 <body>
 <div id="root"></div>
+<script>
+(function initPWA(){
+  try{const m=JSON.stringify({name:'매트 컷팅 도구',short_name:'매트컷팅',description:'현장 측정·G-code·CNC 커팅',start_url:'.',display:'standalone',background_color:'#0f0f0f',theme_color:'#0f0f0f',orientation:'portrait-primary',icons:[{src:"data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' fill='%230f0f0f' rx='22'/><text y='72' x='50' text-anchor='middle' font-size='58'>✂️</text></svg>",sizes:'512x512',type:'image/svg+xml',purpose:'any maskable'}]});const l=Object.assign(document.createElement('link'),{rel:'manifest',href:URL.createObjectURL(new Blob([m],{type:'application/manifest+json'}))});document.head.appendChild(l);}catch(e){}
+  if('serviceWorker' in navigator){try{const sw=`const V='mc-v1.8';self.addEventListener('install',e=>e.waitUntil(caches.open(V).then(c=>c.addAll(['./'])).then(()=>self.skipWaiting())));self.addEventListener('activate',e=>e.waitUntil(caches.keys().then(ks=>Promise.all(ks.filter(k=>k!==V).map(k=>caches.delete(k)))).then(()=>self.clients.claim())));self.addEventListener('fetch',e=>{if(e.request.url.includes('anthropic.com')||e.request.url.includes('/api/'))return;e.respondWith(caches.match(e.request).then(r=>r||fetch(e.request)));});`;navigator.serviceWorker.register(URL.createObjectURL(new Blob([sw],{type:'text/javascript'}))).catch(()=>{});}catch(e){}}
+})();
+</script>
 <script type="text/babel">
-const {useState,useRef,useEffect,useCallback}=React;
+const {useState,useRef,useEffect,useCallback,useMemo}=React;
 
 // ═══════════════════════════════════════════════════════
 // ▓ CORE LAYER ▓  순수 로직 — RN 전환 시 100% 재사용
 // ═══════════════════════════════════════════════════════
+
+// ── 에러 코드 시스템 ────────────────────────────────────
+// 전체 앱에서 사용하는 표준 에러 코드 정의
+// 향후 브랜드 앱 / 고객 지원 / 로그 분석에 활용
+const EC={
+  DEV:{
+    CONN      :'DEV-001', // 기기 연결 실패
+    TIMEOUT   :'DEV-002', // 연결 시간 초과
+    NO_RESP   :'DEV-003', // 기기 응답 없음
+    SEND      :'DEV-004', // G-code 전송 실패
+    STOP_FAIL :'DEV-005', // 긴급 정지 실패
+    CUT_ERR   :'DEV-006', // 커팅 중 오류
+    AUTH      :'DEV-007', // 기기 인증 실패
+  },
+  OTA:{
+    SERVER    :'OTA-001', // 업데이트 서버 연결 실패
+    VERSION   :'OTA-002', // 버전 확인 실패
+    DOWNLOAD  :'OTA-003', // 펌웨어 다운로드 실패
+    CHECKSUM  :'OTA-004', // 파일 검증 실패 (SHA256)
+    INSTALL   :'OTA-005', // 설치 실패
+    ROLLBACK  :'OTA-006', // 이전 버전으로 자동 롤백됨
+  },
+  AI:{
+    NO_KEY    :'AI-001',  // API 키 없음
+    AUTH      :'AI-002',  // API 인증 실패
+    IMG       :'AI-003',  // 이미지 처리 실패
+    NONE      :'AI-004',  // 감지된 영역 없음
+    PARSE     :'AI-005',  // 응답 파싱 실패
+    OFFLINE   :'AI-006',  // 오프라인 상태
+  },
+  MEAS:{
+    NO_CAL    :'MEAS-001',// 보정 정보 없음
+    HOMO      :'MEAS-002',// 원근 보정 계산 실패
+    NO_AREA   :'MEAS-003',// 완성된 영역 없음
+    NO_IMG    :'MEAS-004',// 이미지 없음
+  },
+  STORE:{
+    SAVE      :'STORE-001',// 저장 실패
+    LOAD      :'STORE-002',// 불러오기 실패
+    FULL      :'STORE-003',// 저장 공간 부족
+  },
+  NET:{
+    OFFLINE   :'NET-001', // 인터넷 연결 없음
+    SERVER    :'NET-002', // 서버 오류
+    TIMEOUT   :'NET-003', // 요청 시간 초과
+  },
+  BRAND:{
+    AUTH      :'BRAND-001',// 브랜드 앱 인증 실패
+    INVALID   :'BRAND-002',// 잘못된 실행 파라미터
+  },
+};
+
+// 에러 메시지 테이블
+const EM={
+  'DEV-001':'기기 연결 실패','DEV-002':'연결 시간 초과','DEV-003':'기기 응답 없음',
+  'DEV-004':'G-code 전송 실패','DEV-005':'긴급 정지 실패','DEV-006':'커팅 중 오류','DEV-007':'기기 인증 실패',
+  'OTA-001':'업데이트 서버 연결 실패','OTA-002':'버전 확인 실패','OTA-003':'펌웨어 다운로드 실패',
+  'OTA-004':'파일 검증 실패','OTA-005':'설치 실패','OTA-006':'이전 버전으로 롤백됨',
+  'AI-001':'API 키가 설정되지 않았습니다','AI-002':'API 인증 실패','AI-003':'이미지 처리 실패',
+  'AI-004':'감지된 영역이 없습니다','AI-005':'응답 파싱 실패','AI-006':'오프라인 상태입니다',
+  'MEAS-001':'보정 정보가 없습니다','MEAS-002':'원근 보정 계산 실패',
+  'MEAS-003':'완성된 영역이 없습니다','MEAS-004':'이미지가 없습니다',
+  'STORE-001':'저장 실패','STORE-002':'불러오기 실패','STORE-003':'저장 공간 부족',
+  'NET-001':'인터넷 연결 없음','NET-002':'서버 오류','NET-003':'요청 시간 초과',
+  'BRAND-001':'브랜드 앱 인증 실패','BRAND-002':'잘못된 실행 파라미터',
+};
+
+// 에러 생성 / 포맷 헬퍼
+const appErr=(code,detail='')=>{
+  const err=new Error(`${EM[code]||code}${detail?` (${detail})`:''}`);
+  err.appCode=code;err.userMsg=EM[code]||code;return err;
+};
+const fmtErr=e=>e.appCode?`${e.userMsg} · ${e.appCode}`:e.message;
+
+// ── 기하 / 측정 / G-code 코어 ────────────────────────────
 const Geo={
   dist:(a,b)=>Math.sqrt((a.x-b.x)**2+(a.y-b.y)**2),
   uid:()=>Math.random().toString(36).slice(2,8),
-  calcArea:pts=>{
-    if(pts.length<3)return 0;
-    let a=0;
-    for(let i=0;i<pts.length;i++){const j=(i+1)%pts.length;a+=pts[i].x*pts[j].y-pts[j].x*pts[i].y;}
-    return Math.abs(a/2);
-  },
+  calcArea:pts=>{if(pts.length<3)return 0;let a=0;for(let i=0;i<pts.length;i++){const j=(i+1)%pts.length;a+=pts[i].x*pts[j].y-pts[j].x*pts[i].y;}return Math.abs(a/2);},
 };
 const HomographyEngine={
-  _solve:(A,b)=>{
-    const n=b.length,M=A.map((r,i)=>[...r,b[i]]);
-    for(let c=0;c<n;c++){
-      let mx=c;
-      for(let r=c+1;r<n;r++)if(Math.abs(M[r][c])>Math.abs(M[mx][c]))mx=r;
-      [M[c],M[mx]]=[M[mx],M[c]];
-      for(let r=c+1;r<n;r++){const f=M[r][c]/M[c][c];for(let k=c;k<=n;k++)M[r][k]-=f*M[c][k];}
-    }
-    const x=new Array(n).fill(0);
-    for(let i=n-1;i>=0;i--){x[i]=M[i][n];for(let j=i+1;j<n;j++)x[i]-=M[i][j]*x[j];x[i]/=M[i][i];}
-    return x;
-  },
+  _solve:(A,b)=>{const n=b.length,M=A.map((r,i)=>[...r,b[i]]);for(let c=0;c<n;c++){let mx=c;for(let r=c+1;r<n;r++)if(Math.abs(M[r][c])>Math.abs(M[mx][c]))mx=r;[M[c],M[mx]]=[M[mx],M[c]];for(let r=c+1;r<n;r++){const f=M[r][c]/M[c][c];for(let k=c;k<=n;k++)M[r][k]-=f*M[c][k];}}const x=new Array(n).fill(0);for(let i=n-1;i>=0;i--){x[i]=M[i][n];for(let j=i+1;j<n;j++)x[i]-=M[i][j]*x[j];x[i]/=M[i][i];}return x;},
   compute:(src,dst)=>{
-    const A=[],b=[];
-    for(let i=0;i<4;i++){
-      const{x:sx,y:sy}=src[i],{x:dx,y:dy}=dst[i];
-      A.push([sx,sy,1,0,0,0,-sx*dx,-sy*dx]);b.push(dx);
-      A.push([0,0,0,sx,sy,1,-sx*dy,-sy*dy]);b.push(dy);
-    }
-    return[...HomographyEngine._solve(A,b),1];
+    const A=[],b=[];for(let i=0;i<4;i++){const{x:sx,y:sy}=src[i],{x:dx,y:dy}=dst[i];A.push([sx,sy,1,0,0,0,-sx*dx,-sy*dx]);b.push(dx);A.push([0,0,0,sx,sy,1,-sx*dy,-sy*dy]);b.push(dy);}
+    try{return[...HomographyEngine._solve(A,b),1];}catch{throw appErr(EC.MEAS.HOMO,'행렬 계산 실패');}
   },
   apply:(H,{x,y})=>{const w=H[6]*x+H[7]*y+H[8];return{x:(H[0]*x+H[1]*y+H[2])/w,y:(H[3]*x+H[4]*y+H[5])/w};},
 };
 const Measure={
-  toMm:(pt,cal)=>{
-    if(!cal)return pt;
-    if(cal.mode==='line')return{x:pt.x*cal.mmPerPx,y:pt.y*cal.mmPerPx};
-    return HomographyEngine.apply(cal.H,pt);
-  },
+  toMm:(pt,cal)=>{if(!cal)return pt;if(cal.mode==='line')return{x:pt.x*cal.mmPerPx,y:pt.y*cal.mmPerPx};return HomographyEngine.apply(cal.H,pt);},
   mmDist:(a,b,cal)=>cal?Geo.dist(Measure.toMm(a,cal),Measure.toMm(b,cal)):null,
   mmArea:(pts,cal)=>(!cal||pts.length<3)?null:Geo.calcArea(pts.map(p=>Measure.toMm(p,cal))),
 };
+const GcodeGen={
+  generate:(pieces,cal,params)=>{
+    if(!cal)throw appErr(EC.MEAS.NO_CAL);
+    const closed=pieces.filter(p=>p.closed&&p.pts.length>=3);
+    if(!closed.length)throw appErr(EC.MEAS.NO_AREA);
+    const allMm=closed.flatMap(p=>p.pts.map(pt=>Measure.toMm(pt,cal)));
+    const minX=Math.min(...allMm.map(p=>p.x)),minY=Math.min(...allMm.map(p=>p.y));
+    const nx=v=>(v-minX).toFixed(2),ny=v=>(v-minY).toFixed(2),p=params;
+    const lines=['; =========================================','; 매트 컷팅 자동 생성 G-code',`; 생성일시: ${new Date().toLocaleString('ko-KR')}`,`; 소재: ${p.material} | 두께: ${p.thickness}mm`,`; 절단 영역: ${closed.length}개`,'; =========================================','G21','G90','G17',`G0 Z${p.liftHeight}.00`,'G0 X0.00 Y0.00',''];
+    closed.forEach((piece,i)=>{const pts=piece.pts.map(pt=>Measure.toMm(pt,cal));lines.push(`; ─── ${piece.name} (${i+1}/${closed.length}) ───`);lines.push(`G0 X${nx(pts[0].x)} Y${ny(pts[0].y)}`);lines.push(`G1 Z-${p.cutDepth}.00 F${p.plungeSpeed}`);for(let j=1;j<pts.length;j++)lines.push(`G1 X${nx(pts[j].x)} Y${ny(pts[j].y)} F${p.cutSpeed}`);lines.push(`G1 X${nx(pts[0].x)} Y${ny(pts[0].y)} F${p.cutSpeed}`);lines.push(`G0 Z${p.liftHeight}.00`,'');});
+    lines.push('G0 X0.00 Y0.00','M2');return lines.join('\n');
+  },
+  getMoves:(pieces,cal)=>{if(!cal)return[];const closed=pieces.filter(p=>p.closed&&p.pts.length>=3);if(!closed.length)return[];const allMm=closed.flatMap(p=>p.pts.map(pt=>Measure.toMm(pt,cal)));const minX=Math.min(...allMm.map(p=>p.x)),minY=Math.min(...allMm.map(p=>p.y));const norm=pt=>({x:pt.x-minX,y:pt.y-minY});const moves=[];let cur={x:0,y:0};closed.forEach((piece,pi)=>{const pts=piece.pts.map(pt=>norm(Measure.toMm(pt,cal)));moves.push({type:'travel',from:{...cur},to:{...pts[0]},color:CUT_COLORS[pi%CUT_COLORS.length]});for(let j=1;j<pts.length;j++)moves.push({type:'cut',from:{...pts[j-1]},to:{...pts[j]},color:CUT_COLORS[pi%CUT_COLORS.length]});moves.push({type:'cut',from:{...pts[pts.length-1]},to:{...pts[0]},color:CUT_COLORS[pi%CUT_COLORS.length]});cur={...pts[0]};});moves.push({type:'travel',from:{...cur},to:{x:0,y:0}});return moves;},
+  getStats:(moves,params)=>{let tDist=0,cDist=0;moves.forEach(m=>{const d=Geo.dist(m.from,m.to);m.type==='travel'?(tDist+=d):(cDist+=d);});const ts=params.travelSpeed>0?tDist/params.travelSpeed:0,cs=params.cutSpeed>0?cDist/params.cutSpeed:0;return{travelDist:tDist,cutDist:cDist,timeSec:Math.ceil((ts+cs)*60)};},
+};
 const ExportCore={
-  toSVG:(pieces,cal)=>{
-    if(!cal)return null;
-    const all=pieces.flatMap(p=>p.pts.map(pt=>Measure.toMm(pt,cal)));
-    if(!all.length)return null;
-    const pad=15,minX=Math.min(...all.map(p=>p.x))-pad,minY=Math.min(...all.map(p=>p.y))-pad;
-    const W=Math.max(...all.map(p=>p.x))+pad-minX,H=Math.max(...all.map(p=>p.y))+pad-minY;
-    let body='';
-    pieces.forEach((piece,pi)=>{
-      if(piece.pts.length<2)return;
-      const color=CUT_COLORS[pi%CUT_COLORS.length];
-      const mp=piece.pts.map(pt=>Measure.toMm(pt,cal));
-      body+=`<path d="M ${mp.map(p=>`${(p.x-minX).toFixed(2)},${(p.y-minY).toFixed(2)}`).join(' L ')}${piece.closed?' Z':''}" fill="${piece.closed?color+'22':'none'}" stroke="${color}" stroke-width="0.5" stroke-linejoin="round"/>\n`;
-      const ep=piece.closed?[...mp,mp[0]]:mp;
-      for(let i=1;i<ep.length;i++){
-        const mm=Geo.dist(ep[i-1],ep[i]);
-        body+=`<text x="${((ep[i-1].x+ep[i].x)/2-minX).toFixed(1)}" y="${((ep[i-1].y+ep[i].y)/2-minY-1.5).toFixed(1)}" font-size="3" fill="${color}" text-anchor="middle">${mm.toFixed(0)}mm</text>\n`;
-      }
-    });
-    return`<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="${W.toFixed(1)}mm" height="${H.toFixed(1)}mm" viewBox="0 0 ${W.toFixed(1)} ${H.toFixed(1)}">\n${body}</svg>`;
+  toSVG:(pieces,cal)=>{if(!cal)return null;const all=pieces.flatMap(p=>p.pts.map(pt=>Measure.toMm(pt,cal)));if(!all.length)return null;const pad=15,minX=Math.min(...all.map(p=>p.x))-pad,minY=Math.min(...all.map(p=>p.y))-pad,W=Math.max(...all.map(p=>p.x))+pad-minX,H=Math.max(...all.map(p=>p.y))+pad-minY;let body='';pieces.forEach((piece,pi)=>{if(piece.pts.length<2)return;const color=CUT_COLORS[pi%CUT_COLORS.length],mp=piece.pts.map(pt=>Measure.toMm(pt,cal));body+=`<path d="M ${mp.map(p=>`${(p.x-minX).toFixed(2)},${(p.y-minY).toFixed(2)}`).join(' L ')}${piece.closed?' Z':''}" fill="${piece.closed?color+'22':'none'}" stroke="${color}" stroke-width="0.5"/>\n`;const ep=piece.closed?[...mp,mp[0]]:mp;for(let i=1;i<ep.length;i++){const mm=Geo.dist(ep[i-1],ep[i]);body+=`<text x="${((ep[i-1].x+ep[i].x)/2-minX).toFixed(1)}" y="${((ep[i-1].y+ep[i].y)/2-minY-1.5).toFixed(1)}" font-size="3" fill="${color}" text-anchor="middle">${mm.toFixed(0)}mm</text>\n`;}});return`<?xml version="1.0" encoding="UTF-8"?>\n<svg xmlns="http://www.w3.org/2000/svg" width="${W.toFixed(1)}mm" height="${H.toFixed(1)}mm" viewBox="0 0 ${W.toFixed(1)} ${H.toFixed(1)}">\n${body}</svg>`;},
+};
+
+// ═══════════════════════════════════════════════════════════════════
+// ▓ SERVICE LAYER ▓  RN 전환 시 구현체만 교체
+// ═══════════════════════════════════════════════════════════════════
+
+// ── 브랜드 앱 연동 서비스 ─────────────────────────────────────────
+// 향후 브랜드 앱에서 이 앱 실행 시 URL 파라미터로 제어
+//
+// 진입 방식 (웹):
+//   https://app.domain/?source=brand_app&mode=admin&token=TOKEN&returnUrl=brandapp%3A%2F%2F
+//
+// 진입 방식 (네이티브, RN 전환 후):
+//   matcutter://launch?source=brand_app&mode=admin&token=TOKEN&returnUrl=brandapp%3A%2F%2F
+//
+// 파라미터:
+//   source    = 'brand_app' 고정
+//   mode      = 'admin' | 'user'
+//   token     = 브랜드 앱 발급 인증 토큰 (JWT 권장)
+//   returnUrl = 작업 완료 후 돌아갈 URL (인코딩 필수)
+//
+// 토큰 검증 (현재: 존재 여부만 확인 / 향후: JWT 서명 검증)
+// ─────────────────────────────────────────────────────────────────
+const LaunchParams=(()=>{
+  const p=new URLSearchParams(window.location.search);
+  const source=p.get('source');
+  const mode=p.get('mode');
+  const token=p.get('token');
+  const returnUrl=p.get('returnUrl')?decodeURIComponent(p.get('returnUrl')):null;
+  const isBrandApp=source==='brand_app';
+  // 토큰 검증: 현재는 존재 여부만 확인, 향후 JWT 서명 검증으로 교체
+  const isValidToken=isBrandApp?!!token:true;
+  if(isBrandApp&&!isValidToken)console.warn(`[${EC.BRAND.AUTH}] 브랜드 앱 토큰 없음`);
+  return{
+    isBrandApp,
+    isAdmin:isBrandApp&&mode==='admin'&&isValidToken,
+    isUser:isBrandApp&&mode==='user'&&isValidToken,
+    returnUrl,
+    token,
+    returnToApp:()=>{if(returnUrl)window.location.href=returnUrl;},
+  };
+})();
+
+const delay=ms=>new Promise(r=>setTimeout(r,ms));
+
+const StorageService={
+  save:(k,v)=>{
+    try{localStorage.setItem(k,JSON.stringify(v));return true;}
+    catch(e){
+      if(e.name==='QuotaExceededError')throw appErr(EC.STORE.FULL);
+      throw appErr(EC.STORE.SAVE,e.message);
+    }
+  },
+  load:(k)=>{try{const d=localStorage.getItem(k);return d?JSON.parse(d):null;}catch{throw appErr(EC.STORE.LOAD,k);}},
+  safeSave:(k,v)=>{try{StorageService.save(k,v);return true;}catch{return false;}},
+  safeLoad:(k,def=null)=>{try{return StorageService.load(k)??def;}catch{return def;}},
+};
+
+const ProjectService={
+  MAX:20,
+  save:(name,data)=>{
+    const project={id:Geo.uid(),name:name.trim(),savedAt:new Date().toISOString(),prodType:data.prodType,tileSize:data.tileSize,calibMode:data.calib?.mode||'line',thumbnail:data.thumbnail||null,measurements:data.measurements||[],gcStats:data.gcStats||null};
+    const list=ProjectService.loadAll();list.unshift(project);
+    StorageService.safeSave('projects',list.slice(0,ProjectService.MAX));
+    return project;
+  },
+  loadAll:()=>StorageService.safeLoad('projects',[]),
+  delete:(id)=>StorageService.safeSave('projects',ProjectService.loadAll().filter(p=>p.id!==id)),
+};
+
+const DeviceService={
+  SIMULATION_MODE:true,
+  connect:async(ip)=>{
+    if(DeviceService.SIMULATION_MODE){await delay(1200);return{success:true,device:{ip,name:'매트 커터 MK-1 [시뮬]',firmwareVersion:'1.0.0',model:'MC-1000'}};}
+    try{const r=await fetch(`http://${ip}/api/info`);if(!r.ok)throw appErr(EC.DEV.CONN,`HTTP ${r.status}`);const d=await r.json();return{success:true,device:d};}
+    catch(e){throw e.appCode?e:appErr(EC.DEV.CONN,e.message);}
+  },
+  sendJob:async(ip,gcode,onProgress)=>{
+    if(DeviceService.SIMULATION_MODE){let prog=0;const lines=gcode.split('\n').filter(l=>l.startsWith('G1')).length||20;for(let i=0;i<=100;i+=100/lines){await delay(180);prog=Math.min(100,Math.round(i));onProgress?.({progress:prog,x:+(Math.random()*600).toFixed(1),y:+(Math.random()*400).toFixed(1),status:'cutting'});}onProgress?.({progress:100,x:0,y:0,status:'complete'});return{success:true};}
+    try{const r=await fetch(`http://${ip}/api/cut`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({gcode})});if(!r.ok)throw appErr(EC.DEV.SEND,`HTTP ${r.status}`);return await r.json();}
+    catch(e){throw e.appCode?e:appErr(EC.DEV.SEND,e.message);}
+  },
+  stop:async(ip)=>{
+    if(DeviceService.SIMULATION_MODE){await delay(200);return{success:true};}
+    try{const r=await fetch(`http://${ip}/api/stop`,{method:'POST'});if(!r.ok)throw appErr(EC.DEV.STOP_FAIL,`HTTP ${r.status}`);return await r.json();}
+    catch(e){throw e.appCode?e:appErr(EC.DEV.STOP_FAIL,e.message);}
+  },
+  pause:async(ip)=>{
+    if(DeviceService.SIMULATION_MODE){await delay(200);return{success:true};}
+    try{const r=await fetch(`http://${ip}/api/pause`,{method:'POST'});if(!r.ok)throw appErr(EC.DEV.CONN,`HTTP ${r.status}`);return await r.json();}
+    catch(e){throw e.appCode?e:appErr(EC.DEV.CONN,e.message);}
+  },
+  resume:async(ip)=>{
+    if(DeviceService.SIMULATION_MODE){await delay(200);return{success:true};}
+    try{const r=await fetch(`http://${ip}/api/resume`,{method:'POST'});if(!r.ok)throw appErr(EC.DEV.CONN,`HTTP ${r.status}`);return await r.json();}
+    catch(e){throw e.appCode?e:appErr(EC.DEV.CONN,e.message);}
   },
 };
 
-// ═══════════════════════════════════════════════════════
-// ▓ SERVICE LAYER ▓  RN 전환 시 구현체만 교체
-// ═══════════════════════════════════════════════════════
-const StorageService={
-  save:(k,v)=>{try{localStorage.setItem(k,JSON.stringify(v));return true;}catch{return false;}},
-  load:(k)=>{try{const d=localStorage.getItem(k);return d?JSON.parse(d):null;}catch{return null;}},
+const OTAService={
+  UPDATE_SERVER:'https://updates.matcutter.app',
+  checkLatest:async()=>{
+    if(DeviceService.SIMULATION_MODE){await delay(800);return{latestVersion:'1.1.0',releaseDate:'2025-06-01',notes:'절단 정확도 향상, 속도 최적화, 버그 수정',checksum:'sha256:a3f8c2...',size:524288};}
+    if(!navigator.onLine)throw appErr(EC.NET.OFFLINE);
+    try{const r=await fetch(`${OTAService.UPDATE_SERVER}/version.json`);if(!r.ok)throw appErr(EC.OTA.SERVER,`HTTP ${r.status}`);return await r.json();}
+    catch(e){throw e.appCode?e:appErr(EC.OTA.VERSION,e.message);}
+  },
+  triggerAutoUpdate:async(ip,version,onProgress)=>{
+    if(DeviceService.SIMULATION_MODE){for(let i=0;i<=100;i+=5){await delay(200);onProgress?.(i);}return{success:true};}
+    try{const r=await fetch(`http://${ip}/api/ota/update`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({version,serverUrl:OTAService.UPDATE_SERVER})});if(!r.ok)throw appErr(EC.OTA.INSTALL,`HTTP ${r.status}`);return await r.json();}
+    catch(e){throw e.appCode?e:appErr(EC.OTA.DOWNLOAD,e.message);}
+  },
+  pushFirmware:async(ip,file,onProgress)=>{
+    if(DeviceService.SIMULATION_MODE){for(let i=0;i<=100;i+=10){await delay(300);onProgress?.(i);}return{success:true};}
+    try{const fd=new FormData();fd.append('firmware',file);const r=await fetch(`http://${ip}/api/ota/upload`,{method:'POST',body:fd});if(!r.ok)throw appErr(EC.OTA.INSTALL,`HTTP ${r.status}`);return await r.json();}
+    catch(e){throw e.appCode?e:appErr(EC.OTA.INSTALL,e.message);}
+  },
 };
+
 const VisionAIService={
-  detectArea:async(base64,mime,apiKey)=>{
-    const res=await fetch('https://api.anthropic.com/v1/messages',{
-      method:'POST',
-      headers:{'Content-Type':'application/json','x-api-key':apiKey,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},
-      body:JSON.stringify({
-        model:'claude-sonnet-4-6',max_tokens:1024,
-        messages:[{role:'user',content:[
-          {type:'image',source:{type:'base64',media_type:mime,data:base64}},
-          {type:'text',text:`이미지에서 바닥에 매트를 깔 수 있는 공간의 외곽 폴리곤을 감지해주세요.\n반드시 아래 JSON 형식으로만 응답하세요:\n{"polygons":[{"name":"영역 이름","points":[{"x":0.1,"y":0.2},...]}]}\n좌표는 이미지 크기 대비 비율(0.0~1.0). 최대 3개 영역, 각 3~8개 점.`},
-        ]}],
-      }),
-    });
-    if(!res.ok){const e=await res.json().catch(()=>({}));throw new Error(e.error?.message||`API ${res.status}`);}
-    const data=await res.json();
-    const txt=data.content.find(c=>c.type==='text')?.text||'';
-    return JSON.parse(txt.replace(/```json|```/g,'').trim());
+  detectArea:async(b64,mime,key)=>{
+    if(!key)throw appErr(EC.AI.NO_KEY);
+    if(!navigator.onLine)throw appErr(EC.AI.OFFLINE);
+    try{
+      const res=await fetch('https://api.anthropic.com/v1/messages',{method:'POST',headers:{'Content-Type':'application/json','x-api-key':key,'anthropic-version':'2023-06-01','anthropic-dangerous-direct-browser-access':'true'},body:JSON.stringify({model:'claude-sonnet-4-6',max_tokens:1024,messages:[{role:'user',content:[{type:'image',source:{type:'base64',media_type:mime,data:b64}},{type:'text',text:`이미지에서 바닥 매트 시공 영역의 외곽 폴리곤을 감지해주세요.\n반드시 아래 JSON 형식으로만 응답:\n{"polygons":[{"name":"영역 이름","points":[{"x":0.1,"y":0.2},...]}]}\n좌표는 이미지 크기 대비 비율(0~1). 최대 3개, 각 3~8점.`}]}]})});
+      if(res.status===401)throw appErr(EC.AI.AUTH);
+      if(!res.ok){const e=await res.json().catch(()=>({}));throw appErr(EC.AI.IMG,e.error?.message||`HTTP ${res.status}`);}
+      const data=await res.json();
+      try{const result=JSON.parse((data.content.find(c=>c.type==='text')?.text||'').replace(/```json|```/g,'').trim());if(!result.polygons?.length)throw appErr(EC.AI.NONE);return result;}
+      catch(e){if(e.appCode)throw e;throw appErr(EC.AI.PARSE,e.message);}
+    }catch(e){throw e.appCode?e:appErr(EC.AI.IMG,e.message);}
   },
 };
 
@@ -121,779 +285,451 @@ const VisionAIService={
 // ▓ UI LAYER ▓  웹 전용 — RN 전환 시 재작성
 // ═══════════════════════════════════════════════════════
 const CUT_COLORS=['#ef4444','#f59e0b','#22c55e','#a855f7','#06b6d4','#ec4899'];
-const C={bg:'#0f0f0f',surf:'#181818',card:'#222',border:'#2c2c2c',
-  accent:'#3b82f6',accentDim:'#1e3a5f',accentTxt:'#60a5fa',
-  success:'#22c55e',warn:'#f59e0b',danger:'#ef4444',txt:'#f0f0f0',muted:'#666',faint:'#2a2a2a'};
+const C={bg:'#0f0f0f',surf:'#181818',card:'#222',border:'#2c2c2c',accent:'#3b82f6',accentDim:'#1e3a5f',accentTxt:'#60a5fa',success:'#22c55e',warn:'#f59e0b',danger:'#ef4444',brand:'#7c3aed',brandDim:'#2e1065',txt:'#f0f0f0',muted:'#666',faint:'#2a2a2a'};
 const HOMO_LABELS=['↖ 왼쪽 위','↗ 오른쪽 위','↘ 오른쪽 아래','↙ 왼쪽 아래'];
 const HOMO_COLORS=['#ef4444','#f59e0b','#22c55e','#a855f7'];
-const DEFAULT_ADMIN={unit:'mm',defaultTileSize:60,closeSensitivity:44,
-  presets:[{id:'a',label:'문폭',value:900},{id:'b',label:'문틀',value:800},{id:'c',label:'창문',value:600},{id:'d',label:'타일',value:300},{id:'e',label:'1m',value:1000},{id:'f',label:'2m',value:2000}]};
+const DEFAULT_CUTTING={material:'EVA 폼',thickness:20,cutSpeed:500,travelSpeed:3000,plungeSpeed:200,liftHeight:5,cutDepth:22};
+const DEFAULT_ADMIN={unit:'mm',defaultTileSize:60,closeSensitivity:44,cutting:DEFAULT_CUTTING,presets:[{id:'a',label:'문폭',value:900},{id:'b',label:'문틀',value:800},{id:'c',label:'창문',value:600},{id:'d',label:'타일',value:300},{id:'e',label:'1m',value:1000},{id:'f',label:'2m',value:2000}]};
+const CUTTING_PRESETS=[{label:'EVA 20mm',material:'EVA 폼',thickness:20,cutSpeed:500,travelSpeed:3000,plungeSpeed:200,liftHeight:5,cutDepth:22},{label:'EVA 10mm',material:'EVA 폼',thickness:10,cutSpeed:800,travelSpeed:3000,plungeSpeed:300,liftHeight:5,cutDepth:12},{label:'롤 5mm',material:'롤 매트',thickness:5,cutSpeed:1200,travelSpeed:4000,plungeSpeed:500,liftHeight:3,cutDepth:7},{label:'고무 15mm',material:'고무 매트',thickness:15,cutSpeed:300,travelSpeed:2000,plungeSpeed:150,liftHeight:5,cutDepth:17}];
 
 const Btn=p=><button {...p} style={{padding:'14px',borderRadius:12,border:'none',background:C.accent,color:'#fff',fontSize:16,fontWeight:700,cursor:'pointer',width:'100%',...p.style}}>{p.children}</button>;
 const BtnS=p=><button {...p} style={{padding:'10px 18px',borderRadius:10,border:`2px solid ${C.border}`,background:C.card,color:'#ccc',fontSize:14,cursor:'pointer',...p.style}}>{p.children}</button>;
 const BtnG=p=><button {...p} style={{padding:'6px 12px',borderRadius:8,border:`1px solid ${C.border}`,background:'transparent',color:C.muted,fontSize:13,cursor:'pointer',...p.style}}>{p.children}</button>;
+const fmtDate=iso=>{const d=new Date(iso);return`${d.getMonth()+1}/${d.getDate()} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;};
+
+function CuttingProgressModal({deviceInfo,gcode,deviceIp,onClose}){
+  const [job,setJob]=useState({progress:0,x:0,y:0,status:'connecting'});
+  const [elapsed,setElapsed]=useState(0);const [paused,setPaused]=useState(false);
+  const stopRef=useRef(false);const timerRef=useRef(null);
+  useEffect(()=>{
+    const start=Date.now();timerRef.current=setInterval(()=>setElapsed(Math.floor((Date.now()-start)/1000)),1000);
+    DeviceService.sendJob(deviceIp,gcode,(upd)=>{if(!stopRef.current)setJob(j=>({...j,...upd}));}).catch(e=>{if(!stopRef.current)setJob(j=>({...j,status:'error',error:fmtErr(e)}));});
+    return()=>{clearInterval(timerRef.current);stopRef.current=true;};
+  },[]);
+  const handleStop=async()=>{stopRef.current=true;try{await DeviceService.stop(deviceIp);}catch(e){console.warn(fmtErr(e));}setJob(j=>({...j,status:'stopped'}));clearInterval(timerRef.current);};
+  const handlePause=async()=>{try{if(paused){await DeviceService.resume(deviceIp);setPaused(false);}else{await DeviceService.pause(deviceIp);setPaused(true);}}catch(e){console.warn(fmtErr(e));}};
+  const fmtTime=s=>`${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;
+  const isFinished=['complete','stopped','error'].includes(job.status);
+  const sc={connecting:C.accentTxt,cutting:C.success,paused:C.warn,complete:C.success,stopped:C.warn,error:C.danger}[job.status]||C.muted;
+  const sl={connecting:'연결 중...',cutting:'커팅 중',paused:'일시 정지',complete:'✅ 완료',stopped:'⛔ 정지됨',error:'❌ 오류'}[job.status];
+  return(
+    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.98)',zIndex:500,display:'flex',flexDirection:'column',maxWidth:600,margin:'0 auto'}}>
+      <div style={{padding:'14px 18px',background:C.surf,borderBottom:`1px solid ${C.border}`,display:'flex',alignItems:'center',gap:10}}>
+        <div style={{width:10,height:10,borderRadius:'50%',background:sc,boxShadow:`0 0 8px ${sc}`}}/>
+        <div style={{flex:1}}><div style={{fontWeight:700,fontSize:15}}>{deviceInfo?.name}</div><div style={{fontSize:11,color:sc,fontWeight:600}}>{sl}</div></div>
+        <div style={{fontSize:18,fontWeight:700,color:C.muted}}>{fmtTime(elapsed)}</div>
+      </div>
+      <div style={{flex:1,display:'flex',flexDirection:'column',justifyContent:'center',padding:24,gap:24}}>
+        <div style={{textAlign:'center'}}><div style={{fontSize:72,fontWeight:900,color:sc,lineHeight:1}}>{job.progress}<span style={{fontSize:32}}>%</span></div><div style={{fontSize:13,color:C.muted,marginTop:8}}>커팅 진행률</div></div>
+        <div style={{background:C.faint,borderRadius:8,height:12,overflow:'hidden'}}><div style={{width:`${job.progress}%`,height:'100%',background:`linear-gradient(90deg,${C.accent},${sc})`,transition:'width 0.3s',borderRadius:8}}/></div>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:10}}>
+          {[{l:'X 위치',v:`${job.x}mm`},{l:'Y 위치',v:`${job.y}mm`},{l:'경과',v:fmtTime(elapsed)}].map(({l,v})=>(<div key={l} style={{background:C.card,borderRadius:10,padding:'12px',textAlign:'center'}}><div style={{fontSize:10,color:C.muted,marginBottom:4}}>{l}</div><div style={{fontWeight:700,fontSize:14}}>{v}</div></div>))}
+        </div>
+        {job.status==='complete'&&<div style={{background:'#14532d44',border:`1px solid ${C.success}44`,borderRadius:12,padding:16,textAlign:'center'}}><div style={{fontSize:32,marginBottom:8}}>🎉</div><div style={{fontWeight:700,fontSize:16,color:C.success}}>커팅 완료!</div><div style={{fontSize:12,color:C.muted,marginTop:4}}>소요: {fmtTime(elapsed)}</div></div>}
+        {job.status==='error'&&<div style={{background:`${C.danger}22`,border:`1px solid ${C.danger}44`,borderRadius:12,padding:16,textAlign:'center'}}><div style={{fontWeight:700,color:C.danger}}>오류 발생</div><div style={{fontSize:12,color:C.muted,marginTop:4}}>{job.error}</div></div>}
+      </div>
+      <div style={{padding:'14px 18px',background:C.surf,borderTop:`1px solid ${C.border}`,display:'grid',gap:10}}>
+        {!isFinished&&<><button onClick={handleStop} style={{padding:'16px',borderRadius:12,border:'none',background:C.danger,color:'#fff',fontSize:18,fontWeight:900,cursor:'pointer',letterSpacing:2}}>⛔ 긴급 정지</button><button onClick={handlePause} style={{padding:'12px',borderRadius:10,border:`2px solid ${C.border}`,background:C.card,color:'#ccc',fontSize:14,cursor:'pointer'}}>{paused?'▶ 재개':'⏸ 일시 정지'}</button></>}
+        {isFinished&&<Btn onClick={onClose} style={{background:job.status==='complete'?C.success:C.accent}}>{job.status==='complete'?'완료 확인':'닫기'}</Btn>}
+      </div>
+    </div>
+  );
+}
+
+function GcodePreviewModal({pieces,calib,params,onClose}){
+  const cvRef=useRef(null);const rafRef=useRef(null);
+  const [progress,setProgress]=useState(0);const [playing,setPlaying]=useState(false);const [speed,setSpeed]=useState(1);
+  const moves=useMemo(()=>GcodeGen.getMoves(pieces,calib),[pieces,calib]);
+  const stats=useMemo(()=>GcodeGen.getStats(moves,params),[moves,params]);
+  const totalDist=useMemo(()=>moves.reduce((s,m)=>s+Geo.dist(m.from,m.to),0),[moves]);
+  const fmtTime=s=>{if(s<60)return`${s}초`;return`${Math.floor(s/60)}분 ${s%60}초`;};
+  useEffect(()=>{
+    const canvas=cvRef.current;if(!canvas||!moves.length)return;
+    const allPts=moves.flatMap(m=>[m.from,m.to]);const mnX=Math.min(...allPts.map(p=>p.x)),mnY=Math.min(...allPts.map(p=>p.y)),mxX=Math.max(...allPts.map(p=>p.x)),mxY=Math.max(...allPts.map(p=>p.y));
+    const W=canvas.offsetWidth||500,H=canvas.offsetHeight||320;canvas.width=W;canvas.height=H;
+    const pad=40,sc=Math.min((W-pad*2)/(mxX-mnX||1),(H-pad*2)/(mxY-mnY||1));const tx=pt=>({x:pad+(pt.x-mnX)*sc,y:pad+(pt.y-mnY)*sc});
+    const ctx=canvas.getContext('2d');ctx.clearRect(0,0,W,H);ctx.fillStyle='#0a0a0a';ctx.fillRect(0,0,W,H);
+    ctx.strokeStyle='#1e1e1e';ctx.lineWidth=0.5;const gS=50;
+    for(let x=0;x<=mxX-mnX+gS;x+=gS){const p=tx({x:mnX+x,y:mnY});ctx.beginPath();ctx.moveTo(p.x,pad);ctx.lineTo(p.x,H-pad/2);ctx.stroke();ctx.fillStyle='#333';ctx.font='10px Arial';ctx.textAlign='center';ctx.fillText(`${x}`,p.x,H-10);}
+    for(let y=0;y<=mxY-mnY+gS;y+=gS){const p=tx({x:mnX,y:mnY+y});ctx.beginPath();ctx.moveTo(pad/2,p.y);ctx.lineTo(W-pad/2,p.y);ctx.stroke();ctx.fillStyle='#333';ctx.textAlign='right';ctx.fillText(`${y}`,pad-4,p.y+4);}
+    let dSF=progress*totalDist,acc=0,curPos={x:0,y:0};
+    for(let i=0;i<moves.length;i++){const m=moves[i];const md=Geo.dist(m.from,m.to);const fd=acc+md<=dSF,pd=acc<dSF&&acc+md>dSF;if(fd||pd){const t=fd?1:(dSF-acc)/md;const ep={x:m.from.x+(m.to.x-m.from.x)*t,y:m.from.y+(m.to.y-m.from.y)*t};const a=tx(m.from),b=tx(ep);ctx.strokeStyle=m.type==='cut'?(m.color||'#ef4444'):'#3b82f666';ctx.lineWidth=m.type==='cut'?2:1;m.type==='cut'?ctx.setLineDash([]):ctx.setLineDash([6,4]);ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke();ctx.setLineDash([]);if(!fd){curPos={...ep};break;}curPos={...m.to};acc+=md;}else break;}
+    let aF=0;for(const m of moves){const md=Geo.dist(m.from,m.to),ic=m.type==='cut';const dim=()=>{ctx.strokeStyle=ic?'#333':'#222';ctx.lineWidth=ic?1.5:0.5;ic?ctx.setLineDash([]):ctx.setLineDash([4,4]);};if(aF>=dSF){const a=tx(m.from),b=tx(m.to);dim();ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke();ctx.setLineDash([]);}else if(aF<dSF&&aF+md>dSF){const t=(dSF-aF)/md,pf={x:m.from.x+(m.to.x-m.from.x)*t,y:m.from.y+(m.to.y-m.from.y)*t};const a=tx(pf),b=tx(m.to);dim();ctx.beginPath();ctx.moveTo(a.x,a.y);ctx.lineTo(b.x,b.y);ctx.stroke();ctx.setLineDash([]);}aF+=md;}
+    const o=tx({x:0,y:0});ctx.fillStyle='#f59e0b';ctx.beginPath();ctx.arc(o.x,o.y,5,0,Math.PI*2);ctx.fill();ctx.fillStyle='#f59e0b';ctx.font='bold 11px Arial';ctx.textAlign='left';ctx.fillText('원점',o.x+8,o.y+4);
+    const cp=tx(curPos);ctx.fillStyle='#22c55e';ctx.beginPath();ctx.arc(cp.x,cp.y,7,0,Math.PI*2);ctx.fill();ctx.strokeStyle='#22c55e44';ctx.lineWidth=12;ctx.beginPath();ctx.arc(cp.x,cp.y,7,0,Math.PI*2);ctx.stroke();
+    ctx.fillStyle='#555';ctx.font='10px Arial';ctx.textAlign='center';ctx.fillText('(mm)',W/2,H-2);
+  },[moves,progress,totalDist]);
+  useEffect(()=>{if(playing){let last=null;const spd=0.00015*speed;const tick=ts=>{if(last!=null)setProgress(p=>{const n=p+(ts-last)*spd;if(n>=1){setPlaying(false);return 1;}return n;});last=ts;rafRef.current=requestAnimationFrame(tick);};rafRef.current=requestAnimationFrame(tick);}return()=>cancelAnimationFrame(rafRef.current);},[playing,speed]);
+  const pct=Math.round(progress*100);
+  return(
+    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.97)',zIndex:400,display:'flex',flexDirection:'column',maxWidth:600,margin:'0 auto'}}>
+      <div style={{padding:'12px 16px',background:C.surf,borderBottom:`1px solid ${C.border}`,display:'flex',alignItems:'center',gap:10}}><span style={{fontSize:18}}>🎬</span><div style={{flex:1}}><div style={{fontWeight:700,fontSize:15}}>G-code 경로 시뮬레이터</div><div style={{fontSize:11,color:C.muted}}>소재: {params.material}</div></div><BtnG onClick={onClose}>닫기 ✕</BtnG></div>
+      <div style={{flex:1,background:'#0a0a0a'}}><canvas ref={cvRef} style={{width:'100%',height:'100%',display:'block'}}/></div>
+      <div style={{padding:14,background:C.surf,borderTop:`1px solid ${C.border}`}}>
+        <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:12}}><span style={{fontSize:12,color:C.muted,minWidth:30}}>{pct}%</span><div style={{flex:1,background:C.faint,borderRadius:4,height:8,overflow:'hidden',cursor:'pointer'}} onClick={e=>{const r=e.currentTarget.getBoundingClientRect();setProgress(Math.max(0,Math.min(1,(e.clientX-r.left)/r.width)));}}><div style={{width:`${pct}%`,height:'100%',background:`linear-gradient(90deg,${C.accent},#22c55e)`,transition:'width 0.1s'}}/></div><span style={{fontSize:12,color:C.muted,minWidth:30,textAlign:'right'}}>100%</span></div>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8,marginBottom:12}}>{[{l:'절단 거리',v:`${(stats.cutDist/1000).toFixed(2)}m`,c:C.danger},{l:'이동 거리',v:`${(stats.travelDist/1000).toFixed(2)}m`,c:C.accentTxt},{l:'예상 시간',v:fmtTime(stats.timeSec),c:C.warn}].map(({l,v,c})=>(<div key={l} style={{background:C.card,borderRadius:8,padding:'8px',textAlign:'center'}}><div style={{fontSize:10,color:C.muted,marginBottom:2}}>{l}</div><div style={{fontWeight:700,fontSize:14,color:c}}>{v}</div></div>))}</div>
+        <div style={{display:'flex',alignItems:'center',gap:10,marginBottom:10}}><span style={{fontSize:11,color:C.muted,minWidth:50}}>재생속도</span><input type="range" min="0.5" max="5" step="0.5" value={speed} onChange={e=>setSpeed(+e.target.value)} style={{flex:1}}/><span style={{fontSize:12,color:C.accentTxt,minWidth:30}}>{speed}x</span></div>
+        <div style={{display:'flex',gap:8}}><button onClick={()=>{setProgress(0);setPlaying(false);}} style={{padding:'12px 16px',borderRadius:10,border:`1px solid ${C.border}`,background:C.card,color:C.muted,fontSize:18,cursor:'pointer'}}>⏮</button><button onClick={()=>setPlaying(p=>!p)} style={{flex:1,padding:'12px',borderRadius:10,border:'none',background:playing?C.warn:C.accent,color:'#fff',fontSize:15,fontWeight:700,cursor:'pointer'}}>{playing?'⏸ 일시정지':'▶ 재생'}</button><button onClick={()=>{setProgress(1);setPlaying(false);}} style={{padding:'12px 16px',borderRadius:10,border:`1px solid ${C.border}`,background:C.card,color:C.muted,fontSize:18,cursor:'pointer'}}>⏭</button></div>
+      </div>
+    </div>
+  );
+}
+
+function ProjectDetailModal({project,onDelete,onClose}){
+  const admin=StorageService.safeLoad('adminSettings',DEFAULT_ADMIN);
+  const fmtLen=mm=>admin.unit==='cm'?`${(mm/10).toFixed(1)}cm`:`${Math.round(mm)}mm`;
+  const fmtArea=mm2=>admin.unit==='cm'?`${(mm2/100).toFixed(1)}cm²`:`${(mm2/1e6).toFixed(3)}m²`;
+  return(
+    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.92)',zIndex:400,display:'flex',flexDirection:'column',maxWidth:600,margin:'0 auto'}}>
+      <div style={{padding:'14px 18px',background:C.surf,borderBottom:`1px solid ${C.border}`,display:'flex',alignItems:'center',gap:10}}><div style={{flex:1}}><div style={{fontWeight:700,fontSize:16}}>{project.name}</div><div style={{fontSize:11,color:C.muted}}>{fmtDate(project.savedAt)} · {project.prodType==='puzzle'?'퍼즐형':'롤형'} · {project.calibMode==='homography'?'4점 원근보정':'기준선'}</div></div><BtnG onClick={onClose}>✕</BtnG></div>
+      <div style={{flex:1,overflowY:'auto',padding:20}}>
+        {project.thumbnail&&<img src={project.thumbnail} alt="" style={{width:'100%',borderRadius:12,marginBottom:16,objectFit:'cover',maxHeight:180}}/>}
+        {project.measurements.map((m,i)=>(<div key={i} style={{background:C.card,borderRadius:14,padding:16,marginBottom:12}}><div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}><div style={{width:12,height:12,borderRadius:'50%',background:CUT_COLORS[i%CUT_COLORS.length]}}/><span style={{fontWeight:700,fontSize:15}}>{m.name}</span>{m.fromAI&&<span style={{fontSize:10,color:C.accentTxt,background:`${C.accent}22`,padding:'2px 6px',borderRadius:4}}>✨AI</span>}</div><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>{m.sides.map((s,j)=><div key={j} style={{background:'#2a2a2a',borderRadius:10,padding:12}}><div style={{fontSize:10,color:C.muted,marginBottom:2}}>변 {j+1}</div><div style={{fontWeight:800,fontSize:20}}>{fmtLen(s)}</div></div>)}{m.areaMm2>0&&<div style={{background:`${C.accent}12`,border:`1px solid ${C.accent}33`,borderRadius:10,padding:12}}><div style={{fontSize:10,color:C.muted,marginBottom:2}}>면적</div><div style={{fontWeight:800,fontSize:18,color:C.accentTxt}}>{fmtArea(m.areaMm2)}</div></div>}{m.tiles&&<div style={{background:`${C.success}12`,border:`1px solid ${C.success}33`,borderRadius:10,padding:12}}><div style={{fontSize:10,color:C.muted,marginBottom:2}}>타일</div><div style={{fontWeight:800,fontSize:18,color:C.success}}>{m.tiles.total}장</div></div>}</div></div>))}
+        {project.gcStats&&<div style={{background:`${C.warn}12`,border:`1px solid ${C.warn}33`,borderRadius:12,padding:14}}><div style={{fontWeight:600,marginBottom:10,color:C.warn}}>⚡ G-code 정보</div><div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:8}}>{[{l:'절단 거리',v:`${(project.gcStats.cutDist/1000).toFixed(2)}m`},{l:'이동 거리',v:`${(project.gcStats.travelDist/1000).toFixed(2)}m`},{l:'예상 시간',v:project.gcStats.timeSec<60?`${project.gcStats.timeSec}초`:`${Math.floor(project.gcStats.timeSec/60)}분`}].map(({l,v})=>(<div key={l} style={{background:'rgba(0,0,0,0.3)',borderRadius:8,padding:10,textAlign:'center'}}><div style={{fontSize:10,color:C.muted}}>{l}</div><div style={{fontWeight:700,fontSize:13,color:C.warn}}>{v}</div></div>))}</div></div>}
+      </div>
+      <div style={{padding:'14px 18px',background:C.surf,borderTop:`1px solid ${C.border}`,display:'flex',gap:10}}><button onClick={()=>{onDelete(project.id);onClose();}} style={{flex:1,padding:'12px',borderRadius:10,border:`1px solid ${C.danger}44`,background:'transparent',color:C.danger,fontSize:14,cursor:'pointer'}}>🗑 삭제</button><Btn onClick={onClose} style={{flex:2}}>닫기</Btn></div>
+    </div>
+  );
+}
 
 function App(){
+  // 브랜드 앱 진입 상태
+  const {isBrandApp,isAdmin:isBrandAdmin,returnUrl}=LaunchParams;
+
   const [step,setStep]=useState(1);
   const [prodType,setProdType]=useState('puzzle');
-  // tileSize는 admin 기본값에서 초기화
-  const [tileSize,setTileSize]=useState(()=>(StorageService.load('adminSettings')||DEFAULT_ADMIN).defaultTileSize);
-
-  // 보정 상태
+  const [tileSize,setTileSize]=useState(()=>StorageService.safeLoad('adminSettings',DEFAULT_ADMIN).defaultTileSize);
   const [calibMode,setCalibMode]=useState('line');
-  const [scalePts,setScalePts]=useState([]);
-  const [scaleMm,setScaleMm]=useState('');
-  const [homoPts,setHomoPts]=useState([]);
-  const [homoW,setHomoW]=useState('');
-  const [homoH,setHomoH]=useState('');
+  const [scalePts,setScalePts]=useState([]);const [scaleMm,setScaleMm]=useState('');
+  const [homoPts,setHomoPts]=useState([]);const [homoW,setHomoW]=useState('');const [homoH,setHomoH]=useState('');
   const [calib,setCalib]=useState(null);
-
-  // 영역
-  const [pieces,setPieces]=useState([]);
-  const [activeId,setActiveId]=useState(null);
-  const [hoverPt,setHoverPt]=useState(null);
-  const [dragging,setDragging]=useState(null);
+  const [pieces,setPieces]=useState([]);const [activeId,setActiveId]=useState(null);
+  const [hoverPt,setHoverPt]=useState(null);const [dragging,setDragging]=useState(null);
   const [img,setImg]=useState(null);
-
-  // UI
   const [toast,setToast]=useState(null);
-  const [zoom,setZoom]=useState(1);
-  const [panX,setPanX]=useState(0);
-  const [panY,setPanY]=useState(0);
-  const [showSettings,setShowSettings]=useState(false);
-  const [settingsTab,setSettingsTab]=useState('api'); // 'api' | 'admin'
+  const [zoom,setZoom]=useState(1);const [panX,setPanX]=useState(0);const [panY,setPanY]=useState(0);
+  const [showSettings,setShowSettings]=useState(false);const [settingsTab,setSettingsTab]=useState('device');
   const [aiLoading,setAiLoading]=useState(false);
+  const [showGcodePreview,setShowGcodePreview]=useState(false);const [showCuttingModal,setShowCuttingModal]=useState(false);
+  // BUG FIX①: GcodeGen.generate throw 방지 — 모달 열기 전 미리 생성 후 상태 저장
+  const [cuttingGcode,setCuttingGcode]=useState('');
+  const [apiKey,setApiKey]=useState(()=>StorageService.safeLoad('apiKey',''));
+  const [admin,setAdmin]=useState(()=>({...DEFAULT_ADMIN,...StorageService.safeLoad('adminSettings',{})}));
+  const [deviceIp,setDeviceIp]=useState(()=>StorageService.safeLoad('deviceIp','192.168.1.100'));
+  const [deviceInfo,setDeviceInfo]=useState(null);const [connecting,setConnecting]=useState(false);
+  const [otaInfo,setOtaInfo]=useState(null);const [otaProgress,setOtaProgress]=useState(null);
+  const [firmwareFile,setFirmwareFile]=useState(null);
+  const [isOnline,setIsOnline]=useState(()=>navigator.onLine);
+  const [installPrompt,setInstallPrompt]=useState(null);const [showInstallBanner,setShowInstallBanner]=useState(false);const [showIosGuide,setShowIosGuide]=useState(false);
+  const isIOS=useMemo(()=>/iphone|ipad|ipod/i.test(navigator.userAgent),[]);
+  const isStandalone=useMemo(()=>window.matchMedia('(display-mode:standalone)').matches||!!window.navigator.standalone,[]);
+  const [projects,setProjects]=useState(()=>ProjectService.loadAll());
+  const [showSaveDialog,setShowSaveDialog]=useState(false);const [projectName,setProjectName]=useState('');
+  const [showProjectDetail,setShowProjectDetail]=useState(null);
 
-  // API 키
-  const [apiKey,setApiKey]=useState(()=>StorageService.load('apiKey')||'');
+  // 브랜드 앱 관리자 모드로 진입 시 관리자 설정 자동 오픈
+  useEffect(()=>{
+    if(isBrandAdmin){setShowSettings(true);setSettingsTab('admin');}
+  },[isBrandAdmin]);
 
-  // ▼ 관리자 설정
-  const [admin,setAdmin]=useState(()=>({...DEFAULT_ADMIN,...(StorageService.load('adminSettings')||{})}));
-  const saveAdmin=(updates)=>{const n={...admin,...updates};setAdmin(n);StorageService.save('adminSettings',n);};
-  // 단위 표시 헬퍼
-  const fmtLen=useCallback((mm)=>{
-    if(mm===null||mm===undefined)return'-';
-    return admin.unit==='cm'?`${(mm/10).toFixed(1)} cm`:`${Math.round(mm)} mm`;
-  },[admin.unit]);
-  const fmtArea=useCallback((mm2)=>{
-    if(mm2===null||mm2===undefined)return'-';
-    return admin.unit==='cm'?`${(mm2/100).toFixed(1)} cm²`:`${(mm2/1e6).toFixed(3)} m²`;
-  },[admin.unit]);
+  useEffect(()=>{
+    const on=()=>setIsOnline(true),off=()=>setIsOnline(false);
+    window.addEventListener('online',on);window.addEventListener('offline',off);
+    const onInstall=e=>{e.preventDefault();setInstallPrompt(e);if(!isStandalone)setShowInstallBanner(true);};
+    window.addEventListener('beforeinstallprompt',onInstall);
+    if(isIOS&&!isStandalone){const t=setTimeout(()=>setShowInstallBanner(true),3000);return()=>{clearTimeout(t);window.removeEventListener('online',on);window.removeEventListener('offline',off);window.removeEventListener('beforeinstallprompt',onInstall);};}
+    return()=>{window.removeEventListener('online',on);window.removeEventListener('offline',off);window.removeEventListener('beforeinstallprompt',onInstall);};
+  },[isIOS,isStandalone]);
 
-  const canvasRef=useRef(null);
-  const imgElRef=useRef(null);
-  const fileRef=useRef(null);
-  const touchRef=useRef({type:null});
-
-  const CLOSE_PX=admin.closeSensitivity||44;
-  const DRAG_PX=44;
-
+  const handleInstall=async()=>{if(isIOS){setShowIosGuide(true);return;}if(!installPrompt)return;installPrompt.prompt();const{outcome}=await installPrompt.userChoice;if(outcome==='accepted'){setShowInstallBanner(false);setInstallPrompt(null);showToast('✅ 홈 화면에 추가됨');}};
+  const firmwareFileRef=useRef(null);
+  const saveAdmin=u=>{const n={...admin,...u};setAdmin(n);StorageService.safeSave('adminSettings',n);};
+  const fmtLen=useCallback(mm=>{if(mm===null||mm===undefined)return'-';return admin.unit==='cm'?`${(mm/10).toFixed(1)} cm`:`${Math.round(mm)} mm`;},[admin.unit]);
+  const fmtArea=useCallback(mm2=>{if(mm2===null||mm2===undefined)return'-';return admin.unit==='cm'?`${(mm2/100).toFixed(1)} cm²`:`${(mm2/1e6).toFixed(3)} m²`;},[admin.unit]);
+  const canvasRef=useRef(null);const imgElRef=useRef(null);const fileRef=useRef(null);const touchRef=useRef({type:null});
+  const CLOSE_PX=admin.closeSensitivity||44,DRAG_PX=44;
   const showToast=(msg,dur=2400)=>{setToast(msg);setTimeout(()=>setToast(null),dur);};
   const resetView=()=>{setZoom(1);setPanX(0);setPanY(0);};
-
-  const s2c=useCallback((sx,sy)=>{
-    const c=canvasRef.current;if(!c||!img)return{x:0,y:0};
-    const r=c.getBoundingClientRect();
-    return{x:(sx-r.left)*(img.w/r.width),y:(sy-r.top)*(img.h/r.height)};
-  },[img]);
-  const screenDist=useCallback((a,b)=>{
-    const c=canvasRef.current;if(!c||!img)return 9999;
-    return Geo.dist(a,b)*(c.getBoundingClientRect().width/img.w);
-  },[img]);
+  const s2c=useCallback((sx,sy)=>{const c=canvasRef.current;if(!c||!img)return{x:0,y:0};const r=c.getBoundingClientRect();return{x:(sx-r.left)*(img.w/r.width),y:(sy-r.top)*(img.h/r.height)};},[img]);
+  const screenDist=useCallback((a,b)=>{const c=canvasRef.current;if(!c||!img)return 9999;return Geo.dist(a,b)*(c.getBoundingClientRect().width/img.w);},[img]);
   const evtPos=e=>e.touches?{x:e.touches[0].clientX,y:e.touches[0].clientY}:{x:e.clientX,y:e.clientY};
 
-  const onFile=e=>{
-    const f=e.target.files[0];if(!f)return;
-    const url=URL.createObjectURL(f);
-    const im=new Image();
-    im.onload=()=>{
-      imgElRef.current=im;
-      setImg({src:url,w:im.naturalWidth,h:im.naturalHeight});
-      setScalePts([]);setScaleMm('');setHomoPts([]);setHomoW('');setHomoH('');
-      setCalib(null);setPieces([]);setActiveId(null);resetView();setStep(3);
-    };
-    im.src=url;
-  };
+  const connectDevice=async()=>{if(!deviceIp)return showToast('IP 주소를 입력하세요');setConnecting(true);try{const r=await DeviceService.connect(deviceIp);if(r.success){setDeviceInfo(r.device);StorageService.safeSave('deviceIp',deviceIp);showToast(`✅ ${r.device.name} 연결됨`);}else{showToast(`연결 실패 · ${EC.DEV.NO_RESP}`,4000);}}catch(e){showToast(fmtErr(e),4000);}finally{setConnecting(false);}};
+  const disconnectDevice=()=>{setDeviceInfo(null);setOtaInfo(null);showToast('연결 해제됨');};
+  const checkOTA=async()=>{try{const info=await OTAService.checkLatest();setOtaInfo(info);if(info.latestVersion===deviceInfo?.firmwareVersion)showToast('✅ 최신 버전');else showToast(`🔄 새 버전 ${info.latestVersion} 발견!`);}catch(e){showToast(fmtErr(e),4000);}};
+  const doAutoOTA=async()=>{if(!otaInfo||!deviceInfo)return;setOtaProgress(0);try{await OTAService.triggerAutoUpdate(deviceIp,otaInfo.latestVersion,p=>setOtaProgress(p));setDeviceInfo(d=>({...d,firmwareVersion:otaInfo.latestVersion}));showToast(`✅ ${otaInfo.latestVersion} 업데이트 완료`);setOtaInfo(null);}catch(e){showToast(fmtErr(e),4000);}finally{setOtaProgress(null);}};
+  const doPushOTA=async()=>{if(!firmwareFile||!deviceInfo)return;setOtaProgress(0);try{await OTAService.pushFirmware(deviceIp,firmwareFile,p=>setOtaProgress(p));showToast('✅ 펌웨어 업로드 완료');setFirmwareFile(null);}catch(e){showToast(fmtErr(e),4000);}finally{setOtaProgress(null);}};
+
+  const onFile=e=>{const f=e.target.files[0];if(!f)return;const url=URL.createObjectURL(f);const im=new Image();im.onload=()=>{imgElRef.current=im;setImg({src:url,w:im.naturalWidth,h:im.naturalHeight});setScalePts([]);setScaleMm('');setHomoPts([]);setHomoW('');setHomoH('');setCalib(null);setPieces([]);setActiveId(null);resetView();setStep(3);};im.src=url;};
   const initPieces=()=>{const id=Geo.uid();setPieces([{id,name:'영역 1',pts:[],closed:false}]);setActiveId(id);};
-  const confirmLine=()=>{
-    if(scalePts.length!==2||!scaleMm||+scaleMm<=0)return showToast('끝점과 길이를 모두 입력하세요');
-    setCalib({mode:'line',mmPerPx:+scaleMm/Geo.dist(scalePts[0],scalePts[1])});
-    initPieces();setStep(4);showToast('기준선 설정 완료 ✓');
-  };
+  const confirmLine=()=>{if(scalePts.length!==2||!scaleMm||+scaleMm<=0)return showToast('끝점과 길이를 모두 입력하세요');setCalib({mode:'line',mmPerPx:+scaleMm/Geo.dist(scalePts[0],scalePts[1])});initPieces();setStep(4);showToast('기준선 설정 완료 ✓');};
   const confirmHomo=()=>{
     if(homoPts.length!==4||!homoW||!homoH||+homoW<=0||+homoH<=0)return showToast('4개 코너와 크기를 모두 입력하세요');
     const W=+homoW,H=+homoH;
-    setCalib({mode:'homography',H:HomographyEngine.compute(homoPts,[{x:0,y:0},{x:W,y:0},{x:W,y:H},{x:0,y:H}])});
-    initPieces();setStep(4);showToast('4점 원근 보정 완료 ✓');
+    try{setCalib({mode:'homography',H:HomographyEngine.compute(homoPts,[{x:0,y:0},{x:W,y:0},{x:W,y:H},{x:0,y:H}])});initPieces();setStep(4);showToast('4점 원근 보정 완료 ✓');}
+    catch(e){showToast(fmtErr(e),4000);}
   };
-
   const runAIDetect=async()=>{
-    if(!apiKey)return showToast('⚙️ 설정에서 API 키를 입력해주세요',3500);
-    if(!img||!imgElRef.current)return;
-    setAiLoading(true);
+    if(!img||!imgElRef.current)return;setAiLoading(true);
     try{
-      const tmp=document.createElement('canvas');
-      tmp.width=img.w;tmp.height=img.h;
-      tmp.getContext('2d').drawImage(imgElRef.current,0,0);
-      const b64=tmp.toDataURL('image/jpeg',0.8).split(',')[1];
-      const result=await VisionAIService.detectArea(b64,'image/jpeg',apiKey);
-      if(!result.polygons?.length)return showToast('감지된 영역이 없어요');
-      const np=result.polygons.map((poly,i)=>({
-        id:Geo.uid(),name:poly.name||`AI 영역 ${i+1}`,
-        pts:poly.points.map(p=>({x:p.x*img.w,y:p.y*img.h})),
-        closed:true,fromAI:true,
-      }));
-      setPieces(p=>[...p.filter(x=>x.pts.length>0),...np]);
-      setActiveId(np[0].id);
-      showToast(`✨ ${np.length}개 영역 자동 감지 완료`);
-    }catch(e){showToast(`AI 오류: ${e.message}`,4000);}
+      const tmp=document.createElement('canvas');tmp.width=img.w;tmp.height=img.h;tmp.getContext('2d').drawImage(imgElRef.current,0,0);
+      const result=await VisionAIService.detectArea(tmp.toDataURL('image/jpeg',0.8).split(',')[1],'image/jpeg',apiKey);
+      const np=result.polygons.map((poly,i)=>({id:Geo.uid(),name:poly.name||`AI 영역 ${i+1}`,pts:poly.points.map(p=>({x:p.x*img.w,y:p.y*img.h})),closed:true,fromAI:true}));
+      setPieces(p=>[...p.filter(x=>x.pts.length>0),...np]);setActiveId(np[0].id);showToast(`✨ ${np.length}개 영역 감지 완료`);
+    }catch(e){showToast(fmtErr(e),4000);}
     finally{setAiLoading(false);}
   };
+  const downloadGcode=()=>{try{const gc=GcodeGen.generate(pieces,calib,admin.cutting||DEFAULT_CUTTING);const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([gc],{type:'text/plain'}));a.download=`cutting_${new Date().toISOString().slice(0,10)}.nc`;a.click();showToast('G-code 다운로드 완료 ✓');}catch(e){showToast(fmtErr(e),4000);}};
+  const exportSVG=()=>{const svg=ExportCore.toSVG(pieces,calib);if(!svg)return showToast(EM[EC.MEAS.NO_AREA]);const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([svg],{type:'image/svg+xml'}));a.download='cutting-guide.svg';a.click();showToast('SVG 다운로드 완료 ✓');};
 
-  // 캔버스 그리기
+  const getMeasurements=useCallback(()=>{
+    if(!calib)return[];
+    return pieces.map(piece=>{const ep=piece.closed?[...piece.pts,piece.pts[0]]:piece.pts;const sides=[];for(let j=1;j<ep.length;j++){const mm=Measure.mmDist(ep[j-1],ep[j],calib);if(mm!==null)sides.push(mm);}return{name:piece.name,sides,areaMm2:piece.closed?(Measure.mmArea(piece.pts,calib)||0):0,closed:piece.closed,piece,fromAI:piece.fromAI};});
+  },[calib,pieces]);
+  const getTiles=useCallback(piece=>{if(!piece.closed||!calib||!piece.pts.length)return null;const mp=piece.pts.map(p=>Measure.toMm(p,calib));const xs=mp.map(p=>p.x),ys=mp.map(p=>p.y);const cols=Math.ceil((Math.max(...xs)-Math.min(...xs))/tileSize),rows=Math.ceil((Math.max(...ys)-Math.min(...ys))/tileSize);return{cols,rows,total:cols*rows};},[calib,tileSize]);
+
+  const createThumbnail=()=>{const canvas=canvasRef.current;if(!canvas)return null;try{const t=document.createElement('canvas');t.width=280;t.height=160;t.getContext('2d').drawImage(canvas,0,0,280,160);return t.toDataURL('image/jpeg',0.65);}catch{return null;}};
+  const doSaveProject=()=>{
+    if(!projectName.trim())return showToast('이름을 입력하세요');
+    const ms=getMeasurements();
+    const measurements=ms.filter(m=>m.closed&&m.sides.length>0).map(m=>({name:m.name,sides:m.sides,areaMm2:m.areaMm2,fromAI:m.fromAI,tiles:prodType==='puzzle'?getTiles(m.piece):null}));
+    const gcStats=calib&&pieces.some(p=>p.closed)?GcodeGen.getStats(GcodeGen.getMoves(pieces,calib),admin.cutting||DEFAULT_CUTTING):null;
+    try{ProjectService.save(projectName,{prodType,tileSize,calib,measurements,gcStats,thumbnail:createThumbnail()});setProjects(ProjectService.loadAll());setShowSaveDialog(false);setProjectName('');showToast('✅ 프로젝트 저장 완료');}
+    catch(e){showToast(fmtErr(e),4000);}
+  };
+  const deleteProject=(id)=>{ProjectService.delete(id);setProjects(ProjectService.loadAll());showToast('삭제됨');};
+
   useEffect(()=>{
-    const canvas=canvasRef.current;
-    if(!canvas||!img||!imgElRef.current)return;
+    const canvas=canvasRef.current;if(!canvas||!img||!imgElRef.current)return;
     if(canvas.width!==img.w||canvas.height!==img.h){canvas.width=img.w;canvas.height=img.h;}
-    const ctx=canvas.getContext('2d');
-    ctx.clearRect(0,0,img.w,img.h);ctx.drawImage(imgElRef.current,0,0);
+    const ctx=canvas.getContext('2d');ctx.clearRect(0,0,img.w,img.h);ctx.drawImage(imgElRef.current,0,0);
     const bs=Math.max(img.w,img.h)*0.014;
-
-    // 기준선
-    if(step===3&&calibMode==='line'&&scalePts.length>0){
-      const ep=scalePts[1]||hoverPt;
-      ctx.strokeStyle='#60a5fa';ctx.lineWidth=bs*0.4;ctx.setLineDash([bs,bs*0.5]);
-      ctx.beginPath();ctx.moveTo(scalePts[0].x,scalePts[0].y);if(ep)ctx.lineTo(ep.x,ep.y);
-      ctx.stroke();ctx.setLineDash([]);
-      scalePts.forEach(p=>{ctx.fillStyle='#60a5fa';ctx.beginPath();ctx.arc(p.x,p.y,bs*1.2,0,Math.PI*2);ctx.fill();});
-    }
-    // 4점 원근
-    if(step===3&&calibMode==='homography'){
-      if(homoPts.length>=2){
-        ctx.strokeStyle='rgba(255,255,255,0.3)';ctx.lineWidth=bs*0.3;ctx.setLineDash([bs,bs*0.5]);
-        ctx.beginPath();homoPts.forEach((p,i)=>i===0?ctx.moveTo(p.x,p.y):ctx.lineTo(p.x,p.y));
-        if(homoPts.length===4)ctx.closePath();ctx.stroke();ctx.setLineDash([]);
-      }
-      homoPts.forEach((p,i)=>{
-        ctx.fillStyle=HOMO_COLORS[i];ctx.beginPath();ctx.arc(p.x,p.y,bs*1.5,0,Math.PI*2);ctx.fill();
-        ctx.fillStyle='#fff';ctx.font=`bold ${bs*1.3}px Arial`;
-        ctx.fillText(['TL','TR','BR','BL'][i],p.x+bs*2,p.y-bs*0.5);
-      });
-      if(homoPts.length<4&&hoverPt){
-        ctx.fillStyle=HOMO_COLORS[homoPts.length]+'77';ctx.beginPath();
-        ctx.arc(hoverPt.x,hoverPt.y,bs*1.2,0,Math.PI*2);ctx.fill();
-      }
-    }
-
-    // 컷팅 영역
-    const ap=pieces.find(p=>p.id===activeId);
-    const nearClose=ap&&!ap.closed&&ap.pts.length>=3&&hoverPt&&screenDist(ap.pts[0],hoverPt)<CLOSE_PX;
-
+    if(step===3&&calibMode==='line'&&scalePts.length>0){const ep=scalePts[1]||hoverPt;ctx.strokeStyle='#60a5fa';ctx.lineWidth=bs*0.4;ctx.setLineDash([bs,bs*0.5]);ctx.beginPath();ctx.moveTo(scalePts[0].x,scalePts[0].y);if(ep)ctx.lineTo(ep.x,ep.y);ctx.stroke();ctx.setLineDash([]);scalePts.forEach(p=>{ctx.fillStyle='#60a5fa';ctx.beginPath();ctx.arc(p.x,p.y,bs*1.2,0,Math.PI*2);ctx.fill();});}
+    if(step===3&&calibMode==='homography'){if(homoPts.length>=2){ctx.strokeStyle='rgba(255,255,255,0.3)';ctx.lineWidth=bs*0.3;ctx.setLineDash([bs,bs*0.5]);ctx.beginPath();homoPts.forEach((p,i)=>i===0?ctx.moveTo(p.x,p.y):ctx.lineTo(p.x,p.y));if(homoPts.length===4)ctx.closePath();ctx.stroke();ctx.setLineDash([]);}homoPts.forEach((p,i)=>{ctx.fillStyle=HOMO_COLORS[i];ctx.beginPath();ctx.arc(p.x,p.y,bs*1.5,0,Math.PI*2);ctx.fill();ctx.fillStyle='#fff';ctx.font=`bold ${bs*1.3}px Arial`;ctx.fillText(['TL','TR','BR','BL'][i],p.x+bs*2,p.y-bs*0.5);});if(homoPts.length<4&&hoverPt){ctx.fillStyle=HOMO_COLORS[homoPts.length]+'77';ctx.beginPath();ctx.arc(hoverPt.x,hoverPt.y,bs*1.2,0,Math.PI*2);ctx.fill();}}
+    const ap=pieces.find(p=>p.id===activeId);const nearClose=ap&&!ap.closed&&ap.pts.length>=3&&hoverPt&&screenDist(ap.pts[0],hoverPt)<CLOSE_PX;
     pieces.forEach((piece,pi)=>{
-      if(!piece.pts.length)return;
-      const color=CUT_COLORS[pi%CUT_COLORS.length];
-      const isActive=piece.id===activeId;
-      if(piece.closed){
-        ctx.fillStyle=color+'28';ctx.beginPath();
-        piece.pts.forEach((p,i)=>i===0?ctx.moveTo(p.x,p.y):ctx.lineTo(p.x,p.y));
-        ctx.closePath();ctx.fill();
-      }
-      ctx.strokeStyle=color;ctx.lineWidth=isActive?bs*0.6:bs*0.3;ctx.lineJoin='round';
-      ctx.beginPath();
-      piece.pts.forEach((p,i)=>i===0?ctx.moveTo(p.x,p.y):ctx.lineTo(p.x,p.y));
-      if(piece.closed)ctx.closePath();
-      else if(isActive&&hoverPt&&step===4){
-        // ▼ BUG FIX: nearClose일 때 첫 점으로 스냅 (이전: 커서 위치로 선이 튀는 버그)
-        const snap=isActive&&nearClose;
-        ctx.lineTo(snap?piece.pts[0].x:hoverPt.x,snap?piece.pts[0].y:hoverPt.y);
-      }
-      ctx.stroke();
-
-      piece.pts.forEach((p,i)=>{
-        const isFirst=i===0;
-        if(isFirst&&isActive&&nearClose){
-          ctx.strokeStyle='#22c55e';ctx.lineWidth=bs*0.7;
-          ctx.beginPath();ctx.arc(p.x,p.y,bs*2.8,0,Math.PI*2);ctx.stroke();
-          ctx.fillStyle='#22c55e';ctx.font=`bold ${bs*1.4}px Arial`;ctx.textAlign='center';
-          ctx.fillText('탭하면 완성!',p.x,p.y-bs*3.5);ctx.textAlign='left';
-        }
-        ctx.beginPath();ctx.arc(p.x,p.y,isFirst?bs*1.6:bs*1.1,0,Math.PI*2);
-        ctx.fillStyle=isFirst?'#fff':color;ctx.fill();
-        if(isFirst){ctx.strokeStyle=nearClose&&isActive?'#22c55e':color;ctx.lineWidth=bs*0.5;ctx.stroke();}
-      });
-      if(piece.fromAI&&piece.pts.length>0){
-        const cx=piece.pts.reduce((s,p)=>s+p.x,0)/piece.pts.length;
-        const cy=piece.pts.reduce((s,p)=>s+p.y,0)/piece.pts.length;
-        ctx.font=`bold ${bs*1.2}px Arial`;ctx.textAlign='center';
-        ctx.fillStyle='rgba(0,0,0,0.65)';const tw=ctx.measureText('✨ AI').width;
-        ctx.fillRect(cx-tw/2-6,cy-bs*2,tw+12,bs*2.4);ctx.fillStyle='#60a5fa';ctx.fillText('✨ AI',cx,cy);ctx.textAlign='left';
-      }
-      if(calib){
-        ctx.textAlign='center';ctx.font=`bold ${bs*1.5}px Arial`;
-        const ep=piece.closed?[...piece.pts,piece.pts[0]]:piece.pts;
-        for(let i=1;i<ep.length;i++){
-          const mm=Measure.mmDist(ep[i-1],ep[i],calib);if(mm===null)continue;
-          const mx=(ep[i-1].x+ep[i].x)/2,my=(ep[i-1].y+ep[i].y)/2;
-          const txt=fmtLen(mm);const tw=ctx.measureText(txt).width;
-          ctx.fillStyle='rgba(0,0,0,0.75)';ctx.fillRect(mx-tw/2-5,my-bs*2,tw+10,bs*2.2);
-          ctx.fillStyle='#fff';ctx.fillText(txt,mx,my-bs*0.3);
-        }
-        ctx.textAlign='left';
-        if(piece.closed){
-          const cx=piece.pts.reduce((s,p)=>s+p.x,0)/piece.pts.length;
-          const cy=piece.pts.reduce((s,p)=>s+p.y,0)/piece.pts.length;
-          const a2=Measure.mmArea(piece.pts,calib);
-          if(a2!==null){
-            const txt=fmtArea(a2);ctx.font=`bold ${bs*1.8}px Arial`;ctx.textAlign='center';
-            const tw=ctx.measureText(txt).width;
-            ctx.fillStyle='rgba(0,0,0,0.82)';ctx.fillRect(cx-tw/2-8,cy-bs*2.2,tw+16,bs*2.6);
-            ctx.fillStyle=color;ctx.fillText(txt,cx,cy);ctx.textAlign='left';
-          }
-        }
-      }
+      if(!piece.pts.length)return;const color=CUT_COLORS[pi%CUT_COLORS.length],isActive=piece.id===activeId;
+      if(piece.closed){ctx.fillStyle=color+'28';ctx.beginPath();piece.pts.forEach((p,i)=>i===0?ctx.moveTo(p.x,p.y):ctx.lineTo(p.x,p.y));ctx.closePath();ctx.fill();}
+      ctx.strokeStyle=color;ctx.lineWidth=isActive?bs*0.6:bs*0.3;ctx.lineJoin='round';ctx.beginPath();piece.pts.forEach((p,i)=>i===0?ctx.moveTo(p.x,p.y):ctx.lineTo(p.x,p.y));
+      if(piece.closed)ctx.closePath();else if(isActive&&hoverPt&&step===4){const snap=isActive&&nearClose;ctx.lineTo(snap?piece.pts[0].x:hoverPt.x,snap?piece.pts[0].y:hoverPt.y);}ctx.stroke();
+      piece.pts.forEach((p,i)=>{const isFirst=i===0;if(isFirst&&isActive&&nearClose){ctx.strokeStyle='#22c55e';ctx.lineWidth=bs*0.7;ctx.beginPath();ctx.arc(p.x,p.y,bs*2.8,0,Math.PI*2);ctx.stroke();ctx.fillStyle='#22c55e';ctx.font=`bold ${bs*1.4}px Arial`;ctx.textAlign='center';ctx.fillText('탭하면 완성!',p.x,p.y-bs*3.5);ctx.textAlign='left';}ctx.beginPath();ctx.arc(p.x,p.y,isFirst?bs*1.6:bs*1.1,0,Math.PI*2);ctx.fillStyle=isFirst?'#fff':color;ctx.fill();if(isFirst){ctx.strokeStyle=nearClose&&isActive?'#22c55e':color;ctx.lineWidth=bs*0.5;ctx.stroke();}});
+      if(calib){ctx.textAlign='center';ctx.font=`bold ${bs*1.5}px Arial`;const ep=piece.closed?[...piece.pts,piece.pts[0]]:piece.pts;for(let i=1;i<ep.length;i++){const mm=Measure.mmDist(ep[i-1],ep[i],calib);if(mm===null)continue;const mx=(ep[i-1].x+ep[i].x)/2,my=(ep[i-1].y+ep[i].y)/2;const txt=fmtLen(mm);const tw=ctx.measureText(txt).width;ctx.fillStyle='rgba(0,0,0,0.75)';ctx.fillRect(mx-tw/2-5,my-bs*2,tw+10,bs*2.2);ctx.fillStyle='#fff';ctx.fillText(txt,mx,my-bs*0.3);}ctx.textAlign='left';if(piece.closed){const cx=piece.pts.reduce((s,p)=>s+p.x,0)/piece.pts.length,cy=piece.pts.reduce((s,p)=>s+p.y,0)/piece.pts.length;const a2=Measure.mmArea(piece.pts,calib);if(a2!==null){const txt=fmtArea(a2);ctx.font=`bold ${bs*1.8}px Arial`;ctx.textAlign='center';const tw=ctx.measureText(txt).width;ctx.fillStyle='rgba(0,0,0,0.82)';ctx.fillRect(cx-tw/2-8,cy-bs*2.2,tw+16,bs*2.6);ctx.fillStyle=color;ctx.fillText(txt,cx,cy);ctx.textAlign='left';}}}
     });
-    if(hoverPt&&(step===3||step===4)&&!nearClose){
-      ctx.fillStyle='rgba(255,255,255,0.45)';ctx.beginPath();ctx.arc(hoverPt.x,hoverPt.y,bs*0.55,0,Math.PI*2);ctx.fill();
-    }
+    if(hoverPt&&(step===3||step===4)&&!nearClose){ctx.fillStyle='rgba(255,255,255,0.45)';ctx.beginPath();ctx.arc(hoverPt.x,hoverPt.y,bs*0.55,0,Math.PI*2);ctx.fill();}
   },[img,scalePts,homoPts,calib,calibMode,pieces,hoverPt,step,activeId,screenDist,fmtLen,fmtArea,CLOSE_PX]);
 
-  // 포인터 이벤트
-  const onDown=e=>{
-    e.preventDefault();
-    const{x:sx,y:sy}=evtPos(e);const cp=s2c(sx,sy);
-    if(step===3){
-      if(calibMode==='line'){if(scalePts.length<2)setScalePts(p=>[...p,{...cp}]);}
-      else{if(homoPts.length<4)setHomoPts(p=>[...p,{...cp}]);}
-      return;
-    }
-    if(step===4){
-      const ap=pieces.find(p=>p.id===activeId);if(!ap)return;
-      // ▼ BUG FIX: 닫기 감지를 드래그 감지보다 먼저 처리
-      // (이전: 첫 점이 드래그로 잡혀서 위치가 변경되는 버그)
-      if(!ap.closed&&ap.pts.length>=3&&screenDist(ap.pts[0],cp)<CLOSE_PX){
-        setPieces(p=>p.map(x=>x.id===activeId?{...x,closed:true}:x));
-        showToast('✅ 도형 완성!');return;
-      }
-      for(let i=0;i<ap.pts.length;i++){
-        if(screenDist(ap.pts[i],cp)<DRAG_PX){setDragging({pid:activeId,idx:i});return;}
-      }
-      if(ap.closed)return;
-      setPieces(p=>p.map(x=>x.id===activeId?{...x,pts:[...x.pts,{...cp}]}:x));
-    }
-  };
-  const onMove=e=>{
-    e.preventDefault();
-    const{x:sx,y:sy}=evtPos(e);const cp=s2c(sx,sy);
-    setHoverPt({...cp});
-    if(dragging)setPieces(p=>p.map(x=>{
-      if(x.id!==dragging.pid)return x;const pts=[...x.pts];pts[dragging.idx]={...cp};return{...x,pts};
-    }));
-  };
+  const onDown=e=>{e.preventDefault();const{x:sx,y:sy}=evtPos(e);const cp=s2c(sx,sy);if(step===3){calibMode==='line'?scalePts.length<2&&setScalePts(p=>[...p,{...cp}]):homoPts.length<4&&setHomoPts(p=>[...p,{...cp}]);return;}if(step===4){const ap=pieces.find(p=>p.id===activeId);if(!ap)return;if(!ap.closed&&ap.pts.length>=3&&screenDist(ap.pts[0],cp)<CLOSE_PX){setPieces(p=>p.map(x=>x.id===activeId?{...x,closed:true}:x));showToast('✅ 도형 완성!');return;}for(let i=0;i<ap.pts.length;i++)if(screenDist(ap.pts[i],cp)<DRAG_PX){setDragging({pid:activeId,idx:i});return;}if(ap.closed)return;setPieces(p=>p.map(x=>x.id===activeId?{...x,pts:[...x.pts,{...cp}]}:x));}};
+  const onMove=e=>{e.preventDefault();const{x:sx,y:sy}=evtPos(e);const cp=s2c(sx,sy);setHoverPt({...cp});if(dragging)setPieces(p=>p.map(x=>{if(x.id!==dragging.pid)return x;const pts=[...x.pts];pts[dragging.idx]={...cp};return{...x,pts};}));};
   const onUp=()=>setDragging(null);
-  const onTouchStart=e=>{
-    e.preventDefault();
-    if(e.touches.length>=2){
-      const t0=e.touches[0],t1=e.touches[1];
-      touchRef.current={type:'pinch',
-        initDist:Geo.dist({x:t0.clientX,y:t0.clientY},{x:t1.clientX,y:t1.clientY}),
-        initZoom:zoom,initMidX:(t0.clientX+t1.clientX)/2,initMidY:(t0.clientY+t1.clientY)/2,
-        initPanX:panX,initPanY:panY};
-    }else{touchRef.current={type:'draw'};onDown(e);}
-  };
-  const onTouchMove=e=>{
-    e.preventDefault();
-    if(e.touches.length>=2&&touchRef.current.type==='pinch'){
-      const t0=e.touches[0],t1=e.touches[1];
-      const nd=Geo.dist({x:t0.clientX,y:t0.clientY},{x:t1.clientX,y:t1.clientY});
-      const ts=touchRef.current,nz=Math.max(1,Math.min(6,ts.initZoom*nd/ts.initDist));
-      setZoom(nz);setPanX(ts.initPanX+((t0.clientX+t1.clientX)/2-ts.initMidX));setPanY(ts.initPanY+((t0.clientY+t1.clientY)/2-ts.initMidY));
-    }else if(touchRef.current.type==='draw')onMove(e);
-  };
+  const onTouchStart=e=>{e.preventDefault();if(e.touches.length>=2){const t0=e.touches[0],t1=e.touches[1];touchRef.current={type:'pinch',initDist:Geo.dist({x:t0.clientX,y:t0.clientY},{x:t1.clientX,y:t1.clientY}),initZoom:zoom,initMidX:(t0.clientX+t1.clientX)/2,initMidY:(t0.clientY+t1.clientY)/2,initPanX:panX,initPanY:panY};}else{touchRef.current={type:'draw'};onDown(e);}};
+  const onTouchMove=e=>{e.preventDefault();if(e.touches.length>=2&&touchRef.current.type==='pinch'){const t0=e.touches[0],t1=e.touches[1];const ts=touchRef.current;const nz=Math.max(1,Math.min(6,ts.initZoom*Geo.dist({x:t0.clientX,y:t0.clientY},{x:t1.clientX,y:t1.clientY})/ts.initDist));setZoom(nz);setPanX(ts.initPanX+(t0.clientX+t1.clientX)/2-ts.initMidX);setPanY(ts.initPanY+(t0.clientY+t1.clientY)/2-ts.initMidY);}else if(touchRef.current.type==='draw')onMove(e);};
   const onTouchEnd=e=>{e.preventDefault();if(touchRef.current.type==='draw')onUp();if(e.touches.length<2)touchRef.current={type:null};};
-
-  const undo=()=>{
-    if(step===3){calibMode==='line'?setScalePts(p=>p.slice(0,-1)):setHomoPts(p=>p.slice(0,-1));return;}
-    if(step===4)setPieces(p=>p.map(x=>{
-      if(x.id!==activeId)return x;
-      if(x.closed)return{...x,closed:false};
-      return{...x,pts:x.pts.slice(0,-1)};
-    }));
-  };
+  const undo=()=>{if(step===3){calibMode==='line'?setScalePts(p=>p.slice(0,-1)):setHomoPts(p=>p.slice(0,-1));return;}if(step===4)setPieces(p=>p.map(x=>{if(x.id!==activeId)return x;if(x.closed)return{...x,closed:false};return{...x,pts:x.pts.slice(0,-1)};}));};
   const addPiece=()=>{const id=Geo.uid(),n=pieces.length+1;setPieces(p=>[...p,{id,name:`영역 ${n}`,pts:[],closed:false}]);setActiveId(id);};
-  const getTiles=piece=>{
-    if(!piece.closed||!calib||!piece.pts.length)return null;
-    const mp=piece.pts.map(p=>Measure.toMm(p,calib));
-    const xs=mp.map(p=>p.x),ys=mp.map(p=>p.y);
-    const cols=Math.ceil((Math.max(...xs)-Math.min(...xs))/tileSize);
-    const rows=Math.ceil((Math.max(...ys)-Math.min(...ys))/tileSize);
-    return{cols,rows,total:cols*rows};
-  };
-  const exportSVG=()=>{
-    const svg=ExportCore.toSVG(pieces,calib);
-    if(!svg)return showToast('내보낼 영역이 없어요');
-    const a=document.createElement('a');
-    a.href=URL.createObjectURL(new Blob([svg],{type:'image/svg+xml'}));
-    a.download='cutting-guide.svg';a.click();showToast('SVG 다운로드 완료 ✓');
-  };
-  const getMeasurements=()=>{
-    if(!calib)return[];
-    return pieces.map(piece=>{
-      const ep=piece.closed?[...piece.pts,piece.pts[0]]:piece.pts;
-      const sides=[];
-      for(let j=1;j<ep.length;j++){const mm=Measure.mmDist(ep[j-1],ep[j],calib);if(mm!==null)sides.push(mm);}
-      return{name:piece.name,sides,areaMm2:piece.closed?(Measure.mmArea(piece.pts,calib)||0):0,closed:piece.closed,piece,fromAI:piece.fromAI};
-    });
-  };
 
   const ap=pieces.find(p=>p.id===activeId);
   const hasClosed=pieces.some(p=>p.closed);
   const ms=getMeasurements();
+  const gcStats=useMemo(()=>{if(!calib||!hasClosed)return null;try{return GcodeGen.getStats(GcodeGen.getMoves(pieces,calib),admin.cutting||DEFAULT_CUTTING);}catch{return null;}},[pieces,calib,hasClosed,admin.cutting]);
+  const hasUpdate=otaInfo&&deviceInfo&&otaInfo.latestVersion!==deviceInfo.firmwareVersion;
 
-  const StepDot=({n,label})=>(
-    <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:3}}>
-      <div style={{width:26,height:26,borderRadius:'50%',
-        background:step>n?C.success:step===n?C.accent:C.faint,
-        border:step===n?`2px solid ${C.accentTxt}`:'2px solid transparent',
-        display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,fontWeight:700,color:step>=n?'#fff':C.muted}}>
-        {step>n?'✓':n}
-      </div>
-      <div style={{fontSize:9,color:step===n?C.accentTxt:C.muted}}>{label}</div>
-    </div>
-  );
+  const StepDot=({n,label})=>(<div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:3}}><div style={{width:26,height:26,borderRadius:'50%',background:step>n?C.success:step===n?C.accent:C.faint,border:step===n?`2px solid ${C.accentTxt}`:'2px solid transparent',display:'flex',alignItems:'center',justifyContent:'center',fontSize:10,fontWeight:700,color:step>=n?'#fff':C.muted}}>{step>n?'✓':n}</div><div style={{fontSize:9,color:step===n?C.accentTxt:C.muted}}>{label}</div></div>);
+  const CanvasArea=()=>(<div style={{position:'relative',background:'#000',overflow:'hidden'}}><canvas ref={canvasRef} style={{display:'block',width:`${zoom*100}%`,transform:`translate(${panX}px,${panY}px)`,transformOrigin:'top left',touchAction:'none',cursor:'crosshair'}} onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp} onTouchStart={onTouchStart} onTouchMove={onTouchMove} onTouchEnd={onTouchEnd}/><div className="no-print" style={{position:'absolute',top:10,right:10,display:'flex',flexDirection:'column',gap:4,zIndex:20}}>{[{l:'+',a:()=>setZoom(z=>Math.min(6,+(z+0.5).toFixed(1)))},{l:'−',a:()=>setZoom(z=>{const nz=Math.max(1,+(z-0.5).toFixed(1));if(nz===1){setPanX(0);setPanY(0);}return nz;})},{l:'↺',a:resetView}].map(({l,a})=>(<button key={l} onClick={a} style={{width:40,height:40,borderRadius:10,border:'none',background:'rgba(0,0,0,0.7)',color:'#fff',fontSize:18,cursor:'pointer',backdropFilter:'blur(4px)',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:700}}>{l}</button>))}<div style={{background:'rgba(0,0,0,0.6)',borderRadius:6,padding:'3px 0',fontSize:10,color:'#aaa',textAlign:'center'}}>{Math.round(zoom*100)}%</div></div></div>);
 
-  const CanvasArea=()=>(
-    <div style={{position:'relative',background:'#000',overflow:'hidden'}}>
-      <canvas ref={canvasRef}
-        style={{display:'block',width:`${zoom*100}%`,transform:`translate(${panX}px,${panY}px)`,transformOrigin:'top left',touchAction:'none',cursor:'crosshair'}}
-        onMouseDown={onDown} onMouseMove={onMove} onMouseUp={onUp}
-        onTouchStart={onTouchStart} onTouchMove={onTouchMove} onTouchEnd={onTouchEnd}/>
-      <div className="no-print" style={{position:'absolute',top:10,right:10,display:'flex',flexDirection:'column',gap:4,zIndex:20}}>
-        {[{l:'+',a:()=>setZoom(z=>Math.min(6,+(z+0.5).toFixed(1)))},
-          {l:'−',a:()=>setZoom(z=>{const nz=Math.max(1,+(z-0.5).toFixed(1));if(nz===1){setPanX(0);setPanY(0);}return nz;})},
-          {l:'↺',a:resetView}].map(({l,a})=>(
-          <button key={l} onClick={a} style={{width:40,height:40,borderRadius:10,border:'none',background:'rgba(0,0,0,0.7)',color:'#fff',fontSize:18,cursor:'pointer',backdropFilter:'blur(4px)',display:'flex',alignItems:'center',justifyContent:'center',fontWeight:700}}>{l}</button>
-        ))}
-        <div style={{background:'rgba(0,0,0,0.6)',borderRadius:6,padding:'3px 0',fontSize:10,color:'#aaa',textAlign:'center'}}>{Math.round(zoom*100)}%</div>
-      </div>
-    </div>
-  );
-
-  // ─── 관리자 설정 패널 ───────────────────────────────
   const SettingsPanel=()=>{
-    const [newPresetLabel,setNewPresetLabel]=useState('');
-    const [newPresetValue,setNewPresetValue]=useState('');
-    return(
-    <div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.88)',zIndex:300,display:'flex',alignItems:'flex-end'}}
-      onClick={e=>{if(e.target===e.currentTarget)setShowSettings(false);}}>
-      <div style={{background:C.surf,borderRadius:'20px 20px 0 0',width:'100%',maxWidth:600,margin:'0 auto',maxHeight:'88vh',overflow:'hidden',display:'flex',flexDirection:'column'}}>
-        {/* 탭 헤더 */}
-        <div style={{padding:'16px 20px 0',borderBottom:`1px solid ${C.border}`,display:'flex',alignItems:'center',gap:12}}>
-          <span style={{fontWeight:800,fontSize:16}}>⚙️ 설정</span>
-          <div style={{display:'flex',gap:4,marginLeft:'auto'}}>
-            {[{id:'api',label:'API'},
-              {id:'admin',label:'👑 관리자'}].map(t=>(
-              <button key={t.id} onClick={()=>setSettingsTab(t.id)} style={{padding:'6px 14px',borderRadius:8,border:'none',cursor:'pointer',fontSize:13,fontWeight:600,
-                background:settingsTab===t.id?C.accent:'transparent',color:settingsTab===t.id?'#fff':C.muted}}>{t.label}</button>
-            ))}
-          </div>
-          <BtnG onClick={()=>setShowSettings(false)} style={{marginLeft:8}}>닫기</BtnG>
+    const [npL,setNpL]=useState('');const [npV,setNpV]=useState('');
+    return(<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.9)',zIndex:300,display:'flex',alignItems:'flex-end'}} onClick={e=>{if(e.target===e.currentTarget)setShowSettings(false);}}>
+      <div style={{background:C.surf,borderRadius:'20px 20px 0 0',width:'100%',maxWidth:600,margin:'0 auto',maxHeight:'92vh',overflow:'hidden',display:'flex',flexDirection:'column'}}>
+        <div style={{padding:'16px 20px 0',borderBottom:`1px solid ${C.border}`,display:'flex',alignItems:'center',gap:8,flexWrap:'wrap'}}>
+          <span style={{fontWeight:800,fontSize:15}}>⚙️ 설정</span>
+          {isBrandAdmin&&<span style={{fontSize:11,background:`${C.brand}33`,color:'#c4b5fd',padding:'2px 8px',borderRadius:10}}>👑 관리자</span>}
+          <div style={{display:'flex',gap:3,marginLeft:'auto',flexWrap:'wrap'}}>{[{id:'device',label:'🔌 기기'},{id:'api',label:'API'},{id:'admin',label:'👑 관리자'},{id:'cutting',label:'⚡ 커팅'}].map(t=>(<button key={t.id} onClick={()=>setSettingsTab(t.id)} style={{padding:'6px 10px',borderRadius:8,border:'none',cursor:'pointer',fontSize:11,fontWeight:600,background:settingsTab===t.id?C.accent:'transparent',color:settingsTab===t.id?'#fff':C.muted}}>{t.label}</button>))}</div>
+          <BtnG onClick={()=>setShowSettings(false)}>✕</BtnG>
         </div>
         <div style={{overflowY:'auto',padding:20,flex:1}}>
-
-        {/* ── API 탭 ── */}
-        {settingsTab==='api'&&<div>
-          <div style={{marginBottom:16}}>
-            <div style={{fontWeight:600,marginBottom:6,fontSize:14}}>Anthropic API 키</div>
-            <div style={{fontSize:12,color:C.muted,marginBottom:8}}>AI 자동 감지 기능에 필요합니다</div>
-            <input type="password" value={apiKey}
-              onChange={e=>{setApiKey(e.target.value);StorageService.save('apiKey',e.target.value);}}
-              placeholder="sk-ant-..."
-              style={{width:'100%',padding:'12px 14px',borderRadius:10,border:`2px solid ${C.border}`,background:'#242424',color:C.txt,fontSize:14}}/>
-            <div style={{fontSize:11,color:C.faint,marginTop:6}}>로컬에만 저장 · 외부 전송 없음</div>
-          </div>
-          <div style={{background:C.card,borderRadius:12,padding:14,fontSize:12,color:C.muted,lineHeight:1.9}}>
-            💡 console.anthropic.com → API Keys 에서 발급<br/>
-            ⚠️ AI 감지가 안 될 경우: API 키 확인 및 크레딧 잔액 확인
-          </div>
-        </div>}
-
-        {/* ── 관리자 탭 ── */}
-        {settingsTab==='admin'&&<div style={{display:'grid',gap:16}}>
-
-          {/* 표시 단위 */}
-          <div style={{background:C.card,borderRadius:14,padding:16}}>
-            <div style={{fontWeight:700,marginBottom:12,fontSize:15}}>📐 표시 단위</div>
-            <div style={{display:'flex',gap:8}}>
-              {[{v:'mm',label:'mm (밀리미터)'},{v:'cm',label:'cm (센티미터)'}].map(u=>(
-                <button key={u.v} onClick={()=>saveAdmin({unit:u.v})} style={{
-                  flex:1,padding:'12px',borderRadius:10,cursor:'pointer',fontWeight:700,
-                  border:`2px solid ${admin.unit===u.v?C.accent:C.border}`,
-                  background:admin.unit===u.v?C.accentDim:C.faint,
-                  color:admin.unit===u.v?C.accentTxt:'#888'}}>
-                  {u.label}
-                </button>
-              ))}
+          {settingsTab==='device'&&<div style={{display:'grid',gap:14}}>
+            {DeviceService.SIMULATION_MODE&&<div style={{background:`${C.warn}15`,border:`1px solid ${C.warn}44`,borderRadius:12,padding:12,fontSize:12,color:C.warn,display:'flex',gap:8}}><span>🧪</span><div><strong>시뮬레이션 모드</strong><br/><span style={{color:C.muted}}>실제 기기 없이 테스트 가능. 실기기 연결 시 SIMULATION_MODE=false로 변경.</span></div></div>}
+            <div style={{background:C.card,borderRadius:14,padding:14}}>
+              <div style={{fontWeight:700,marginBottom:10,display:'flex',alignItems:'center',gap:8}}><div style={{width:10,height:10,borderRadius:'50%',background:deviceInfo?C.success:C.faint,boxShadow:deviceInfo?`0 0 8px ${C.success}`:undefined}}/>{deviceInfo?`연결됨 — ${deviceInfo.name}`:'기기 미연결'}</div>
+              {!deviceInfo?<><div style={{fontSize:12,color:C.muted,marginBottom:8}}>커팅기 IP 주소</div><div style={{display:'flex',gap:8}}><input type="text" value={deviceIp} onChange={e=>setDeviceIp(e.target.value)} placeholder="192.168.1.100" style={{flex:1,padding:'10px 12px',borderRadius:10,border:`2px solid ${C.border}`,background:'#242424',color:C.txt,fontSize:15}}/><button onClick={connectDevice} disabled={connecting} style={{padding:'10px 16px',borderRadius:10,border:'none',background:connecting?C.faint:C.accent,color:'#fff',fontSize:14,fontWeight:700,cursor:connecting?'default':'pointer',whiteSpace:'nowrap'}}>{connecting?'연결 중...':'연결'}</button></div></>
+              :<><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:12}}>{[{l:'IP',v:deviceIp},{l:'모델',v:deviceInfo.model||'-'},{l:'펌웨어',v:deviceInfo.firmwareVersion},{l:'상태',v:'준비됨 ✅'}].map(({l,v})=>(<div key={l} style={{background:C.faint,borderRadius:8,padding:'8px 10px'}}><div style={{fontSize:10,color:C.muted}}>{l}</div><div style={{fontWeight:600,fontSize:13}}>{v}</div></div>))}</div><button onClick={disconnectDevice} style={{width:'100%',padding:'10px',borderRadius:10,border:`1px solid ${C.danger}44`,background:'transparent',color:C.danger,fontSize:14,cursor:'pointer'}}>연결 해제</button></>}
             </div>
-          </div>
-
-          {/* 기본 타일 크기 */}
-          <div style={{background:C.card,borderRadius:14,padding:16}}>
-            <div style={{fontWeight:700,marginBottom:12,fontSize:15}}>🧩 기본 타일 크기</div>
-            <div style={{display:'flex',gap:8}}>
-              {[50,60].map(s=>(
-                <button key={s} onClick={()=>{saveAdmin({defaultTileSize:s});setTileSize(s);}} style={{
-                  flex:1,padding:'12px',borderRadius:10,cursor:'pointer',fontWeight:700,
-                  border:`2px solid ${admin.defaultTileSize===s?C.accent:C.border}`,
-                  background:admin.defaultTileSize===s?C.accentDim:C.faint,
-                  color:admin.defaultTileSize===s?C.accentTxt:'#888'}}>{s}×{s}mm</button>
-              ))}
-              <input type="number" placeholder="직접" defaultValue={![50,60].includes(admin.defaultTileSize)?admin.defaultTileSize:''}
-                onChange={e=>{if(+e.target.value>0){saveAdmin({defaultTileSize:+e.target.value});setTileSize(+e.target.value);}}}
-                style={{flex:1,padding:'12px',borderRadius:10,border:`2px solid ${C.border}`,background:'#2a2a2a',color:C.txt,fontSize:15,textAlign:'center'}}/>
-            </div>
-          </div>
-
-          {/* 도형 닫기 감도 */}
-          <div style={{background:C.card,borderRadius:14,padding:16}}>
-            <div style={{fontWeight:700,marginBottom:4,fontSize:15}}>🎯 도형 닫기 감지 거리</div>
-            <div style={{fontSize:12,color:C.muted,marginBottom:12}}>값이 클수록 첫 점에서 더 멀리서도 닫힘 (기본: 44px)</div>
-            <div style={{display:'flex',gap:8,alignItems:'center'}}>
-              <input type="range" min="20" max="80" value={admin.closeSensitivity||44}
-                onChange={e=>saveAdmin({closeSensitivity:+e.target.value})}
-                style={{flex:1}}/>
-              <span style={{fontSize:16,fontWeight:700,color:C.accentTxt,minWidth:40,textAlign:'center'}}>{admin.closeSensitivity||44}</span>
-            </div>
-            <div style={{display:'flex',justifyContent:'space-between',fontSize:10,color:C.muted,marginTop:4}}>
-              <span>정밀 (20)</span><span>보통 (44)</span><span>여유 (80)</span>
-            </div>
-          </div>
-
-          {/* 기준선 프리셋 */}
-          <div style={{background:C.card,borderRadius:14,padding:16}}>
-            <div style={{fontWeight:700,marginBottom:12,fontSize:15}}>📏 기준선 프리셋</div>
-            {admin.presets.map((p,i)=>(
-              <div key={p.id} style={{display:'flex',alignItems:'center',gap:8,marginBottom:8,background:C.faint,borderRadius:8,padding:'8px 10px'}}>
-                <input type="text" value={p.label} onChange={e=>{
-                  const np=[...admin.presets];np[i]={...np[i],label:e.target.value};saveAdmin({presets:np});
-                }} style={{flex:1,background:'transparent',border:'none',color:C.txt,fontSize:14,outline:'none'}}/>
-                <input type="number" value={p.value} onChange={e=>{
-                  const np=[...admin.presets];np[i]={...np[i],value:+e.target.value};saveAdmin({presets:np});
-                }} style={{width:70,background:'#333',border:`1px solid ${C.border}`,borderRadius:6,color:C.txt,fontSize:14,padding:'4px 8px',textAlign:'right'}}/>
-                <span style={{color:C.muted,fontSize:12}}>mm</span>
-                <button onClick={()=>saveAdmin({presets:admin.presets.filter(x=>x.id!==p.id)})}
-                  style={{background:'transparent',border:'none',color:C.danger,fontSize:18,cursor:'pointer',padding:'0 4px'}}>✕</button>
+            {deviceInfo&&<div style={{background:C.card,borderRadius:14,padding:14}}>
+              <div style={{fontWeight:700,marginBottom:10,display:'flex',alignItems:'center',gap:8}}>🔄 OTA{hasUpdate&&<span style={{fontSize:11,background:`${C.warn}22`,color:C.warn,padding:'2px 8px',borderRadius:10}}>업데이트 있음</span>}</div>
+              <div style={{background:C.faint,borderRadius:10,padding:12,marginBottom:10}}>
+                <div style={{fontSize:12,fontWeight:600,marginBottom:6}}>방식 1 — 자동 OTA</div>
+                {otaProgress!==null?<><div style={{background:'#111',borderRadius:6,height:8,overflow:'hidden',marginBottom:6}}><div style={{width:`${otaProgress}%`,height:'100%',background:`linear-gradient(90deg,${C.accent},${C.success})`,transition:'width 0.3s'}}/></div><div style={{fontSize:11,color:C.accentTxt,textAlign:'center'}}>{otaProgress}%</div></>
+                :<div style={{display:'flex',gap:8}}><button onClick={checkOTA} style={{flex:1,padding:'9px',borderRadius:8,border:`1px solid ${C.border}`,background:'transparent',color:C.muted,fontSize:13,cursor:'pointer'}}>버전 확인</button>{hasUpdate&&<button onClick={doAutoOTA} style={{flex:1,padding:'9px',borderRadius:8,border:'none',background:C.warn,color:'#000',fontSize:13,fontWeight:700,cursor:'pointer'}}>v{otaInfo.latestVersion}으로 업데이트</button>}</div>}
+                {otaInfo&&<div style={{fontSize:11,color:C.muted,marginTop:8}}>최신: <strong style={{color:hasUpdate?C.warn:C.success}}>{otaInfo.latestVersion}</strong> — {otaInfo.notes}</div>}
               </div>
-            ))}
-            <div style={{display:'flex',gap:6,marginTop:10}}>
-              <input type="text" value={newPresetLabel} onChange={e=>setNewPresetLabel(e.target.value)}
-                placeholder="이름" style={{flex:1,padding:'8px 10px',borderRadius:8,border:`1px solid ${C.border}`,background:'#2a2a2a',color:C.txt,fontSize:13}}/>
-              <input type="number" value={newPresetValue} onChange={e=>setNewPresetValue(e.target.value)}
-                placeholder="mm" style={{width:70,padding:'8px 10px',borderRadius:8,border:`1px solid ${C.border}`,background:'#2a2a2a',color:C.txt,fontSize:13}}/>
-              <button onClick={()=>{
-                if(!newPresetLabel||!newPresetValue||+newPresetValue<=0)return;
-                saveAdmin({presets:[...admin.presets,{id:Geo.uid(),label:newPresetLabel,value:+newPresetValue}]});
-                setNewPresetLabel('');setNewPresetValue('');
-              }} style={{padding:'8px 14px',borderRadius:8,border:'none',background:C.accent,color:'#fff',fontSize:13,cursor:'pointer'}}>+ 추가</button>
+              <div style={{background:C.faint,borderRadius:10,padding:12}}>
+                <div style={{fontSize:12,fontWeight:600,marginBottom:6}}>방식 2 — 파일 직접 전송</div>
+                <input type="file" accept=".bin" ref={firmwareFileRef} onChange={e=>setFirmwareFile(e.target.files[0])} style={{display:'none'}}/>
+                <div style={{display:'flex',gap:8}}><button onClick={()=>firmwareFileRef.current.click()} style={{flex:1,padding:'9px',borderRadius:8,border:`1px solid ${C.border}`,background:'transparent',color:C.muted,fontSize:12,cursor:'pointer',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{firmwareFile?`📄 ${firmwareFile.name}`:'📁 .bin 파일 선택'}</button>{firmwareFile&&<button onClick={doPushOTA} style={{padding:'9px 14px',borderRadius:8,border:'none',background:C.accent,color:'#fff',fontSize:13,fontWeight:700,cursor:'pointer'}}>전송</button>}</div>
+              </div>
+            </div>}
+          </div>}
+          {settingsTab==='api'&&<div><div style={{fontWeight:600,marginBottom:6,fontSize:14}}>Anthropic API 키</div><input type="password" value={apiKey} onChange={e=>{setApiKey(e.target.value);StorageService.safeSave('apiKey',e.target.value);}} placeholder="sk-ant-..." style={{width:'100%',padding:'12px 14px',borderRadius:10,border:`2px solid ${C.border}`,background:'#242424',color:C.txt,fontSize:14,marginBottom:8}}/><div style={{fontSize:11,color:C.faint,marginBottom:12}}>로컬 저장 · 외부 전송 없음</div><div style={{background:C.card,borderRadius:12,padding:14,fontSize:12,color:C.muted,lineHeight:1.8}}>💡 console.anthropic.com → API Keys 에서 발급</div></div>}
+          {settingsTab==='admin'&&<div style={{display:'grid',gap:14}}>
+            <div style={{background:C.card,borderRadius:14,padding:14}}><div style={{fontWeight:700,marginBottom:10}}>📐 표시 단위</div><div style={{display:'flex',gap:8}}>{[{v:'mm',l:'mm'},{v:'cm',l:'cm'}].map(u=><button key={u.v} onClick={()=>saveAdmin({unit:u.v})} style={{flex:1,padding:'12px',borderRadius:10,cursor:'pointer',fontWeight:700,border:`2px solid ${admin.unit===u.v?C.accent:C.border}`,background:admin.unit===u.v?C.accentDim:C.faint,color:admin.unit===u.v?C.accentTxt:'#888'}}>{u.l}</button>)}</div></div>
+            <div style={{background:C.card,borderRadius:14,padding:14}}><div style={{fontWeight:700,marginBottom:10}}>🧩 기본 타일 크기</div><div style={{display:'flex',gap:8}}>{[50,60].map(s=><button key={s} onClick={()=>{saveAdmin({defaultTileSize:s});setTileSize(s);}} style={{flex:1,padding:'12px',borderRadius:10,cursor:'pointer',fontWeight:700,border:`2px solid ${admin.defaultTileSize===s?C.accent:C.border}`,background:admin.defaultTileSize===s?C.accentDim:C.faint,color:admin.defaultTileSize===s?C.accentTxt:'#888'}}>{s}×{s}mm</button>)}<input type="number" placeholder="직접" onChange={e=>{if(+e.target.value>0){saveAdmin({defaultTileSize:+e.target.value});setTileSize(+e.target.value);}}} style={{flex:1,padding:'12px',borderRadius:10,border:`2px solid ${C.border}`,background:'#2a2a2a',color:C.txt,fontSize:15,textAlign:'center'}}/></div></div>
+            <div style={{background:C.card,borderRadius:14,padding:14}}><div style={{fontWeight:700,marginBottom:4}}>🎯 도형 닫기 감지</div><div style={{display:'flex',alignItems:'center',gap:10,marginTop:10}}><input type="range" min="20" max="80" value={admin.closeSensitivity||44} onChange={e=>saveAdmin({closeSensitivity:+e.target.value})} style={{flex:1}}/><span style={{fontSize:16,fontWeight:700,color:C.accentTxt,minWidth:36,textAlign:'center'}}>{admin.closeSensitivity||44}</span></div></div>
+            <div style={{background:C.card,borderRadius:14,padding:14}}><div style={{fontWeight:700,marginBottom:10}}>📏 기준선 프리셋</div>
+              {admin.presets.map((p,i)=>(<div key={p.id} style={{display:'flex',alignItems:'center',gap:8,marginBottom:6,background:C.faint,borderRadius:8,padding:'8px 10px'}}><input type="text" value={p.label} onChange={e=>{const np=[...admin.presets];np[i]={...np[i],label:e.target.value};saveAdmin({presets:np});}} style={{flex:1,background:'transparent',border:'none',color:C.txt,fontSize:14,outline:'none'}}/><input type="number" value={p.value} onChange={e=>{const np=[...admin.presets];np[i]={...np[i],value:+e.target.value};saveAdmin({presets:np});}} style={{width:65,background:'#333',border:`1px solid ${C.border}`,borderRadius:6,color:C.txt,fontSize:14,padding:'4px 8px',textAlign:'right'}}/><span style={{fontSize:11,color:C.muted}}>mm</span><button onClick={()=>saveAdmin({presets:admin.presets.filter(x=>x.id!==p.id)})} style={{background:'transparent',border:'none',color:C.danger,fontSize:18,cursor:'pointer'}}>✕</button></div>))}
+              <div style={{display:'flex',gap:6,marginTop:8}}><input type="text" value={npL} onChange={e=>setNpL(e.target.value)} placeholder="이름" style={{flex:1,padding:'8px',borderRadius:8,border:`1px solid ${C.border}`,background:'#2a2a2a',color:C.txt,fontSize:13}}/><input type="number" value={npV} onChange={e=>setNpV(e.target.value)} placeholder="mm" style={{width:65,padding:'8px',borderRadius:8,border:`1px solid ${C.border}`,background:'#2a2a2a',color:C.txt,fontSize:13}}/><button onClick={()=>{if(!npL||!+npV)return;saveAdmin({presets:[...admin.presets,{id:Geo.uid(),label:npL,value:+npV}]});setNpL('');setNpV('');}} style={{padding:'8px 14px',borderRadius:8,border:'none',background:C.accent,color:'#fff',fontSize:13,cursor:'pointer'}}>+</button></div>
             </div>
-          </div>
-
-          {/* 초기화 */}
-          <button onClick={()=>{
-            saveAdmin({...DEFAULT_ADMIN});setTileSize(DEFAULT_ADMIN.defaultTileSize);
-            showToast('관리자 설정 초기화 완료');
-          }} style={{padding:'12px',borderRadius:10,border:`1px solid ${C.danger}44`,background:'transparent',color:C.danger,fontSize:14,cursor:'pointer'}}>
-            ↺ 관리자 설정 초기화
-          </button>
-        </div>}
+            <button onClick={()=>{saveAdmin({...DEFAULT_ADMIN});setTileSize(DEFAULT_ADMIN.defaultTileSize);showToast('초기화 완료');}} style={{padding:'12px',borderRadius:10,border:`1px solid ${C.danger}44`,background:'transparent',color:C.danger,fontSize:14,cursor:'pointer'}}>↺ 관리자 설정 초기화</button>
+          </div>}
+          {settingsTab==='cutting'&&<div style={{display:'grid',gap:14}}>
+            <div style={{background:C.card,borderRadius:14,padding:14}}><div style={{fontWeight:700,marginBottom:10}}>소재 프리셋</div><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6}}>{CUTTING_PRESETS.map(preset=>{const cur=admin.cutting||DEFAULT_CUTTING,sel=cur.material===preset.material&&cur.thickness===preset.thickness;return(<button key={preset.label} onClick={()=>saveAdmin({cutting:{...preset}})} style={{padding:'10px',borderRadius:10,cursor:'pointer',border:`2px solid ${sel?C.warn:C.border}`,background:sel?`${C.warn}18`:C.faint,textAlign:'left'}}><div style={{fontWeight:700,fontSize:13,color:sel?C.warn:C.txt}}>{preset.label}</div><div style={{fontSize:11,color:C.muted,marginTop:2}}>{preset.cutSpeed}mm/min</div></button>);})}</div></div>
+            <div style={{background:C.card,borderRadius:14,padding:14}}><div style={{fontWeight:700,marginBottom:12}}>⚙️ 상세 파라미터</div><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:10}}>{[{k:'thickness',l:'소재 두께',u:'mm'},{k:'cutDepth',l:'절단 깊이',u:'mm'},{k:'cutSpeed',l:'절단 속도',u:'mm/min'},{k:'travelSpeed',l:'이동 속도',u:'mm/min'},{k:'plungeSpeed',l:'날 내리기',u:'mm/min'},{k:'liftHeight',l:'날 올림 높이',u:'mm'}].map(({k,l,u})=>(<div key={k}><div style={{fontSize:11,color:C.muted,marginBottom:4}}>{l}</div><div style={{display:'flex',alignItems:'center',gap:4}}><input type="number" value={(admin.cutting||DEFAULT_CUTTING)[k]||0} onChange={e=>saveAdmin({cutting:{...(admin.cutting||DEFAULT_CUTTING),[k]:+e.target.value}})} style={{flex:1,padding:'8px',borderRadius:8,border:`1px solid ${C.border}`,background:'#2a2a2a',color:C.txt,fontSize:14,textAlign:'right'}}/><span style={{fontSize:11,color:C.muted,minWidth:40}}>{u}</span></div></div>))}</div></div>
+          </div>}
         </div>
       </div>
-    </div>
-  );};
+    </div>);
+  };
+
+  const SaveDialog=()=>(<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.88)',zIndex:400,display:'flex',alignItems:'center',justifyContent:'center',padding:20}}><div style={{background:C.surf,borderRadius:20,padding:24,width:'100%',maxWidth:400}}><div style={{fontWeight:800,fontSize:18,marginBottom:6}}>💾 프로젝트 저장</div><div style={{fontSize:12,color:C.muted,marginBottom:16}}>측정 결과와 썸네일이 저장됩니다</div><input type="text" value={projectName} onChange={e=>setProjectName(e.target.value)} onKeyDown={e=>e.key==='Enter'&&doSaveProject()} placeholder="프로젝트 이름 입력" autoFocus style={{width:'100%',padding:'14px',borderRadius:12,border:`2px solid ${C.accent}`,background:'#242424',color:C.txt,fontSize:16,marginBottom:12}}/><div style={{fontSize:11,color:C.muted,marginBottom:16}}>예: 거실 시공 / 2호점 4층 복도 / 아이방</div><div style={{display:'flex',gap:10}}><BtnS onClick={()=>{setShowSaveDialog(false);setProjectName('');}} style={{flex:1}}>취소</BtnS><Btn onClick={doSaveProject} style={{flex:2}}>저장</Btn></div></div></div>);
+
+  // BUG FIX②: 두 배너 동시 표시 시 높이 합산
+const topOffset=(isBrandApp?40:0)+(!isOnline?44:0);
 
   return(
     <div style={{background:C.bg,minHeight:'100vh',maxWidth:600,margin:'0 auto',paddingBottom:110}}>
 
+      {/* 브랜드 앱 진입 배너 */}
+      {isBrandApp&&<div style={{background:`${C.brand}ee`,padding:'9px 18px',display:'flex',alignItems:'center',gap:10,position:'sticky',top:0,zIndex:200}}>
+        {returnUrl&&<button onClick={()=>LaunchParams.returnToApp()} style={{background:'rgba(255,255,255,0.2)',border:'none',color:'#fff',borderRadius:8,padding:'5px 12px',fontSize:13,cursor:'pointer',whiteSpace:'nowrap'}}>← 돌아가기</button>}
+        <span style={{flex:1,fontSize:13,fontWeight:600,color:'#fff'}}>브랜드 앱에서 실행됨</span>
+        {isBrandAdmin&&<span style={{fontSize:11,background:'rgba(255,255,255,0.2)',color:'#fff',padding:'3px 10px',borderRadius:10}}>👑 관리자 모드</span>}
+      </div>}
+
+      {/* 오프라인 배너 */}
+      {!isOnline&&<div style={{background:`${C.danger}ee`,padding:'10px 18px',display:'flex',alignItems:'center',gap:10,position:'sticky',top:isBrandApp?40:0,zIndex:199}}><span style={{fontSize:18}}>📵</span><div style={{flex:1}}><div style={{fontWeight:700,fontSize:14}}>오프라인 상태</div><div style={{fontSize:11,opacity:0.8}}>AI 감지·OTA는 인터넷 연결 후 사용 가능 · {EC.NET.OFFLINE}</div></div></div>}
+
       {/* 헤더 */}
-      <div className="no-print" style={{background:C.surf,padding:'13px 18px',borderBottom:`1px solid ${C.border}`,display:'flex',alignItems:'center',gap:12,position:'sticky',top:0,zIndex:100}}>
+      <div className="no-print" style={{background:C.surf,padding:'13px 18px',borderBottom:`1px solid ${C.border}`,display:'flex',alignItems:'center',gap:12,position:'sticky',top:topOffset,zIndex:100}}>
         <span style={{fontSize:22}}>✂️</span>
-        <div>
-          <div style={{fontWeight:800,fontSize:16}}>매트 컷팅 도구</div>
-          <div style={{fontSize:10,color:C.muted}}>v1.3 · 단위: {admin.unit}</div>
-        </div>
-        <div style={{marginLeft:'auto',display:'flex',alignItems:'center',gap:10}}>
+        <div><div style={{fontWeight:800,fontSize:16}}>매트 컷팅 도구</div><div style={{fontSize:10,color:C.muted}}>v1.8 · 에러코드 · 브랜드앱{isStandalone?' · 앱 모드':''}</div></div>
+        <div style={{marginLeft:'auto',display:'flex',alignItems:'center',gap:8}}>
+          <button onClick={()=>{setShowSettings(true);setSettingsTab('device');}} style={{display:'flex',alignItems:'center',gap:5,padding:'5px 10px',borderRadius:20,border:`1px solid ${deviceInfo?C.success+'44':C.border}`,background:deviceInfo?`${C.success}12`:'transparent',cursor:'pointer'}}>
+            <div style={{width:8,height:8,borderRadius:'50%',background:deviceInfo?C.success:C.faint,boxShadow:deviceInfo?`0 0 6px ${C.success}`:undefined}}/>
+            <span style={{fontSize:11,color:deviceInfo?C.success:C.muted}}>{deviceInfo?'연결됨':'기기 없음'}</span>
+            {hasUpdate&&<span style={{fontSize:10,background:C.warn,color:'#000',borderRadius:10,padding:'1px 6px',fontWeight:700}}>업데이트</span>}
+          </button>
           <button onClick={()=>setShowSettings(true)} style={{background:'transparent',border:'none',color:C.muted,fontSize:20,cursor:'pointer',padding:'4px'}}>⚙️</button>
-          <div style={{display:'flex',gap:6}}>
-            {[['제품',1],['사진',2],['기준',3],['영역',4],['출력',5]].map(([l,n])=><StepDot key={n} n={n} label={l}/>)}
-          </div>
+          <div style={{display:'flex',gap:6}}>{[['제품',1],['사진',2],['기준',3],['영역',4],['출력',5]].map(([l,n])=><StepDot key={n} n={n} label={l}/>)}</div>
         </div>
       </div>
 
+      {showInstallBanner&&!isStandalone&&!isBrandApp&&<div style={{background:`${C.accent}ee`,padding:'12px 18px',display:'flex',alignItems:'center',gap:12}}><span style={{fontSize:20}}>📲</span><div style={{flex:1}}><div style={{fontWeight:700,fontSize:14}}>앱으로 설치하기</div><div style={{fontSize:11,opacity:0.85}}>홈 화면에 추가하면 앱처럼 사용 가능</div></div><button onClick={handleInstall} style={{padding:'8px 14px',borderRadius:8,border:'none',background:'rgba(255,255,255,0.25)',color:'#fff',fontSize:13,fontWeight:700,cursor:'pointer',whiteSpace:'nowrap'}}>설치</button><button onClick={()=>setShowInstallBanner(false)} style={{background:'transparent',border:'none',color:'rgba(255,255,255,0.7)',fontSize:18,cursor:'pointer',padding:'0 4px'}}>✕</button></div>}
+
       {toast&&<div style={{position:'fixed',top:70,left:'50%',transform:'translateX(-50%)',background:'#1a1a1a',border:`1px solid ${C.border}`,borderRadius:30,padding:'10px 20px',fontSize:14,zIndex:999,boxShadow:'0 4px 20px #000a',whiteSpace:'nowrap'}}>{toast}</div>}
       {showSettings&&<SettingsPanel/>}
+      {showSaveDialog&&<SaveDialog/>}
+      {showProjectDetail&&<ProjectDetailModal project={showProjectDetail} onDelete={deleteProject} onClose={()=>setShowProjectDetail(null)}/>}
+      {showIosGuide&&<div style={{position:'fixed',inset:0,background:'rgba(0,0,0,0.92)',zIndex:400,display:'flex',alignItems:'flex-end'}} onClick={e=>{if(e.target===e.currentTarget)setShowIosGuide(false);}}><div style={{background:C.surf,borderRadius:'20px 20px 0 0',width:'100%',maxWidth:600,margin:'0 auto',padding:24}}><div style={{fontWeight:800,fontSize:18,marginBottom:16,textAlign:'center'}}>📱 홈 화면에 추가하기</div><div style={{display:'grid',gap:10}}>{[{n:1,icon:'⬆️',t:'Safari 하단 공유 버튼 탭'},{n:2,icon:'📋',t:'"홈 화면에 추가" 선택'},{n:3,icon:'✅',t:'"추가" 버튼 탭 → 설치 완료!'}].map(({n,icon,t})=>(<div key={n} style={{display:'flex',alignItems:'center',gap:14,background:C.card,borderRadius:12,padding:'14px 16px'}}><div style={{width:32,height:32,borderRadius:'50%',background:C.accent,display:'flex',alignItems:'center',justifyContent:'center',fontWeight:700,fontSize:14,flexShrink:0}}>{n}</div><span style={{fontSize:20}}>{icon}</span><span style={{fontSize:14}}>{t}</span></div>))}</div><button onClick={()=>setShowIosGuide(false)} style={{width:'100%',marginTop:14,padding:'14px',borderRadius:12,border:'none',background:C.accent,color:'#fff',fontSize:16,fontWeight:700,cursor:'pointer'}}>확인</button></div></div>}
+      {showGcodePreview&&<GcodePreviewModal pieces={pieces} calib={calib} params={admin.cutting||DEFAULT_CUTTING} onClose={()=>setShowGcodePreview(false)}/>}
+      {showCuttingModal&&<CuttingProgressModal deviceInfo={deviceInfo} gcode={cuttingGcode} deviceIp={deviceIp} onClose={()=>setShowCuttingModal(false)}/>}
 
-      {/* ══ STEP 1 ══ */}
+      {/* STEP 1 */}
       {step===1&&<div style={{padding:20}}>
         <h2 style={{fontSize:22,fontWeight:800,marginBottom:6}}>제품 타입 선택</h2>
         <p style={{color:C.muted,fontSize:14,marginBottom:20}}>시공할 매트 종류를 선택해주세요</p>
-        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:20}}>
-          {[{id:'puzzle',icon:'🧩',label:'퍼즐형',desc:'조각 타일 조립\n50×50 / 60×60mm'},
-            {id:'roll',icon:'📜',label:'롤형',desc:'장판처럼 연속\n롤 시트 방식'}].map(t=>(
-            <button key={t.id} onClick={()=>setProdType(t.id)} style={{
-              background:prodType===t.id?C.accentDim:C.card,border:`2px solid ${prodType===t.id?C.accent:C.border}`,
-              borderRadius:16,padding:'28px 16px',cursor:'pointer',color:C.txt,textAlign:'center'}}>
-              <div style={{fontSize:44,marginBottom:10}}>{t.icon}</div>
-              <div style={{fontWeight:700,fontSize:17}}>{t.label}</div>
-              <div style={{color:C.muted,fontSize:12,marginTop:6,lineHeight:1.6,whiteSpace:'pre-line'}}>{t.desc}</div>
-              {prodType===t.id&&<div style={{marginTop:10,fontSize:12,color:C.accentTxt}}>✓ 선택됨</div>}
-            </button>
-          ))}
-        </div>
-        {prodType==='puzzle'&&<div style={{background:C.card,borderRadius:14,padding:16,marginBottom:20}}>
-          <div style={{fontWeight:600,marginBottom:12,fontSize:14}}>타일 크기 (mm)</div>
-          <div style={{display:'flex',gap:8}}>
-            {[50,60].map(s=><button key={s} onClick={()=>setTileSize(s)} style={{flex:1,padding:12,borderRadius:10,cursor:'pointer',fontWeight:700,border:`2px solid ${tileSize===s?C.accent:C.border}`,background:tileSize===s?C.accentDim:'#2a2a2a',color:tileSize===s?C.accentTxt:'#888'}}>{s}×{s}</button>)}
-            <input type="number" placeholder="직접" value={![50,60].includes(tileSize)?tileSize:''} onChange={e=>setTileSize(+e.target.value||60)}
-              style={{flex:1,padding:12,borderRadius:10,border:`2px solid ${C.border}`,background:'#242424',color:C.txt,fontSize:16,textAlign:'center'}}/>
-          </div>
+        <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:12,marginBottom:20}}>{[{id:'puzzle',icon:'🧩',label:'퍼즐형',desc:'조각 타일 조립\n50×50 / 60×60mm'},{id:'roll',icon:'📜',label:'롤형',desc:'장판처럼 연속\n롤 시트 방식'}].map(t=>(<button key={t.id} onClick={()=>setProdType(t.id)} style={{background:prodType===t.id?C.accentDim:C.card,border:`2px solid ${prodType===t.id?C.accent:C.border}`,borderRadius:16,padding:'28px 16px',cursor:'pointer',color:C.txt,textAlign:'center'}}><div style={{fontSize:44,marginBottom:10}}>{t.icon}</div><div style={{fontWeight:700,fontSize:17}}>{t.label}</div><div style={{color:C.muted,fontSize:12,marginTop:6,lineHeight:1.6,whiteSpace:'pre-line'}}>{t.desc}</div>{prodType===t.id&&<div style={{marginTop:10,fontSize:12,color:C.accentTxt,fontWeight:600}}>✓ 선택됨</div>}</button>))}</div>
+        {prodType==='puzzle'&&<div style={{background:C.card,borderRadius:14,padding:16,marginBottom:20}}><div style={{fontWeight:600,marginBottom:12,fontSize:14}}>타일 크기 (mm)</div><div style={{display:'flex',gap:8}}>{[50,60].map(s=><button key={s} onClick={()=>setTileSize(s)} style={{flex:1,padding:12,borderRadius:10,cursor:'pointer',fontWeight:700,border:`2px solid ${tileSize===s?C.accent:C.border}`,background:tileSize===s?C.accentDim:'#2a2a2a',color:tileSize===s?C.accentTxt:'#888'}}>{s}×{s}</button>)}<input type="number" placeholder="직접" onChange={e=>setTileSize(+e.target.value||60)} style={{flex:1,padding:12,borderRadius:10,border:`2px solid ${C.border}`,background:'#242424',color:C.txt,fontSize:16,textAlign:'center'}}/></div></div>}
+        <Btn onClick={()=>setStep(2)} style={{marginBottom:20}}>다음 →</Btn>
+        {projects.length>0&&<div>
+          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}><span style={{fontWeight:700,fontSize:15}}>📂 저장된 프로젝트</span><span style={{fontSize:12,color:C.muted}}>{projects.length}/{ProjectService.MAX}</span></div>
+          <div style={{display:'grid',gap:8}}>{projects.map(p=>(<div key={p.id} onClick={()=>setShowProjectDetail(p)} style={{background:C.card,border:`1px solid ${C.border}`,borderRadius:14,padding:14,cursor:'pointer',display:'flex',gap:12,alignItems:'center'}} onMouseEnter={e=>e.currentTarget.style.borderColor=C.accentTxt} onMouseLeave={e=>e.currentTarget.style.borderColor=C.border}>
+            {p.thumbnail?<img src={p.thumbnail} alt="" style={{width:72,height:44,borderRadius:8,objectFit:'cover',flexShrink:0}}/>:<div style={{width:72,height:44,borderRadius:8,background:C.faint,display:'flex',alignItems:'center',justifyContent:'center',fontSize:22,flexShrink:0}}>✂️</div>}
+            <div style={{flex:1,minWidth:0}}><div style={{fontWeight:700,fontSize:14,marginBottom:3,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{p.name}</div><div style={{fontSize:11,color:C.muted}}>{fmtDate(p.savedAt)} · {p.prodType==='puzzle'?'퍼즐형':'롤형'}{p.measurements.length>0&&<span> · {p.measurements.length}개 영역</span>}</div></div>
+            <span style={{color:C.muted,fontSize:18}}>›</span>
+          </div>))}</div>
         </div>}
-        <Btn onClick={()=>setStep(2)}>다음 →</Btn>
       </div>}
 
-      {/* ══ STEP 2 ══ */}
+      {/* STEP 2 */}
       {step===2&&<div style={{padding:20}}>
         <BtnG onClick={()=>setStep(1)}>← 뒤로</BtnG>
         <h2 style={{fontSize:22,fontWeight:800,margin:'16px 0 6px'}}>현장 사진 업로드</h2>
         <p style={{color:C.muted,fontSize:14,marginBottom:24}}>시공 공간 전체가 나오도록 촬영해주세요</p>
         <input type="file" accept="image/*" ref={fileRef} onChange={onFile} style={{display:'none'}}/>
         <div style={{display:'grid',gap:12,marginBottom:20}}>
-          <button onClick={()=>{fileRef.current.setAttribute('capture','environment');fileRef.current.click();}}
-            style={{padding:20,borderRadius:12,border:'none',background:C.accent,color:'#fff',fontSize:16,fontWeight:700,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:10}}>
-            <span style={{fontSize:22}}>📷</span>카메라로 촬영
-          </button>
-          <button onClick={()=>{fileRef.current.removeAttribute('capture');fileRef.current.click();}}
-            style={{background:C.card,border:`2px solid ${C.border}`,borderRadius:12,padding:20,color:'#ccc',fontSize:16,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:10}}>
-            <span style={{fontSize:22}}>🖼️</span>갤러리에서 선택
-          </button>
+          <button onClick={()=>{fileRef.current.setAttribute('capture','environment');fileRef.current.click();}} style={{padding:20,borderRadius:12,border:'none',background:C.accent,color:'#fff',fontSize:16,fontWeight:700,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:10}}><span style={{fontSize:22}}>📷</span>카메라로 촬영</button>
+          <button onClick={()=>{fileRef.current.removeAttribute('capture');fileRef.current.click();}} style={{background:C.card,border:`2px solid ${C.border}`,borderRadius:12,padding:20,color:'#ccc',fontSize:16,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:10}}><span style={{fontSize:22}}>🖼️</span>갤러리에서 선택</button>
         </div>
-        <div style={{background:C.card,borderRadius:14,padding:16,fontSize:13,color:C.muted,lineHeight:1.9}}>
-          💡 <strong style={{color:'#ccc'}}>4점 원근보정 활용 시 정확도 향상</strong><br/>
-          • 문틀(900×2100), 타일(300/600mm) 등 직사각형 물체 포함 촬영<br/>
-          • 광각 촬영 시에도 보정 가능
-        </div>
+        <div style={{background:C.card,borderRadius:14,padding:16,fontSize:13,color:C.muted,lineHeight:1.9}}>💡 <strong style={{color:'#ccc'}}>4점 원근보정 활용 시 정확도 향상</strong><br/>문틀(900×2100), 타일(300/600mm) 등 직사각형 물체 포함 촬영</div>
       </div>}
 
-      {/* ══ STEP 3 ══ */}
+      {/* STEP 3 */}
       {step===3&&img&&<div>
         <div className="no-print" style={{padding:'12px 18px',background:C.surf,borderBottom:`1px solid ${C.border}`}}>
           <BtnG onClick={()=>setStep(2)} style={{marginBottom:10}}>← 뒤로</BtnG>
           <div style={{fontWeight:700,fontSize:16,marginBottom:10}}>기준 설정</div>
-          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6,marginBottom:10}}>
-            {[{id:'line',icon:'📏',label:'기준선 방식',sub:'2점 탭 + 길이 입력'},
-              {id:'homography',icon:'🔲',label:'4점 원근 보정',sub:'광각 왜곡까지 보정'}].map(m=>(
-              <button key={m.id} onClick={()=>{setCalibMode(m.id);setScalePts([]);setHomoPts([]);}}
-                style={{padding:'10px 8px',borderRadius:10,cursor:'pointer',textAlign:'center',
-                  border:`2px solid ${calibMode===m.id?C.accent:C.border}`,
-                  background:calibMode===m.id?C.accentDim:C.card}}>
-                <div style={{fontSize:16,marginBottom:2}}>{m.icon}</div>
-                <div style={{fontSize:12,fontWeight:700,color:calibMode===m.id?C.accentTxt:C.txt}}>{m.label}</div>
-                <div style={{fontSize:10,color:C.muted,marginTop:2}}>{m.sub}</div>
-              </button>
-            ))}
-          </div>
-          <div style={{fontSize:12,color:C.muted}}>
-            {calibMode==='line'&&[scalePts.length===0&&'📍 기준이 될 시작점을 탭하세요',scalePts.length===1&&'📍 끝점을 탭하세요',scalePts.length===2&&'📏 아래에 실제 길이를 입력하세요'].find(Boolean)}
-            {calibMode==='homography'&&(homoPts.length<4?`📍 ${HOMO_LABELS[homoPts.length]} 코너 탭 (${homoPts.length}/4)`:'📐 아래에 직사각형 실제 크기 입력')}
-          </div>
+          <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6,marginBottom:10}}>{[{id:'line',icon:'📏',label:'기준선 방식',sub:'2점 탭 + 길이 입력'},{id:'homography',icon:'🔲',label:'4점 원근 보정',sub:'광각 왜곡까지 보정'}].map(m=>(<button key={m.id} onClick={()=>{setCalibMode(m.id);setScalePts([]);setHomoPts([]);}} style={{padding:'10px 8px',borderRadius:10,cursor:'pointer',textAlign:'center',border:`2px solid ${calibMode===m.id?C.accent:C.border}`,background:calibMode===m.id?C.accentDim:C.card}}><div style={{fontSize:16,marginBottom:2}}>{m.icon}</div><div style={{fontSize:12,fontWeight:700,color:calibMode===m.id?C.accentTxt:C.txt}}>{m.label}</div><div style={{fontSize:10,color:C.muted,marginTop:2}}>{m.sub}</div></button>))}</div>
+          <div style={{fontSize:12,color:C.muted}}>{calibMode==='line'&&[scalePts.length===0&&'📍 시작점을 탭하세요',scalePts.length===1&&'📍 끝점을 탭하세요',scalePts.length===2&&'📏 실제 길이를 입력하세요'].find(Boolean)}{calibMode==='homography'&&(homoPts.length<4?`📍 ${HOMO_LABELS[homoPts.length]} 코너 탭 (${homoPts.length}/4)`:'📐 직사각형 실제 크기 입력')}</div>
         </div>
         <CanvasArea/>
         <div style={{padding:16}}>
-          {calibMode==='line'&&scalePts.length===2&&<div style={{background:C.card,borderRadius:14,border:`2px solid ${C.accent}33`,padding:16,marginBottom:12}}>
-            <div style={{fontWeight:600,marginBottom:10}}>기준선 실제 길이</div>
-            <div style={{display:'flex',gap:8,alignItems:'center',marginBottom:12}}>
-              <input type="number" value={scaleMm} onChange={e=>setScaleMm(e.target.value)} placeholder="mm" autoFocus
-                style={{flex:1,padding:'12px 14px',borderRadius:10,border:`2px solid ${C.accent}`,background:'#242424',color:C.txt,fontSize:22,fontWeight:700}}/>
-              <span style={{color:C.muted,fontWeight:600}}>mm</span>
-            </div>
-            <div style={{display:'flex',flexWrap:'wrap',gap:6}}>
-              {admin.presets.map(p=>(
-                <button key={p.id} onClick={()=>setScaleMm(String(p.value))} style={{padding:'8px 14px',borderRadius:8,cursor:'pointer',fontSize:13,
-                  border:`1px solid ${scaleMm==p.value?C.accent:C.border}`,background:scaleMm==p.value?C.accentDim:'#2a2a2a',
-                  color:scaleMm==p.value?C.accentTxt:C.muted}}>{p.label} {p.value}</button>
-              ))}
-            </div>
-          </div>}
+          {calibMode==='line'&&scalePts.length===2&&<div style={{background:C.card,borderRadius:14,border:`2px solid ${C.accent}33`,padding:16,marginBottom:12}}><div style={{fontWeight:600,marginBottom:10}}>기준선 실제 길이</div><div style={{display:'flex',gap:8,alignItems:'center',marginBottom:12}}><input type="number" value={scaleMm} onChange={e=>setScaleMm(e.target.value)} placeholder="mm" autoFocus style={{flex:1,padding:'12px 14px',borderRadius:10,border:`2px solid ${C.accent}`,background:'#242424',color:C.txt,fontSize:22,fontWeight:700}}/><span style={{color:C.muted,fontWeight:600}}>mm</span></div><div style={{display:'flex',flexWrap:'wrap',gap:6}}>{admin.presets.map(p=><button key={p.id} onClick={()=>setScaleMm(String(p.value))} style={{padding:'8px 14px',borderRadius:8,cursor:'pointer',fontSize:13,border:`1px solid ${scaleMm==p.value?C.accent:C.border}`,background:scaleMm==p.value?C.accentDim:'#2a2a2a',color:scaleMm==p.value?C.accentTxt:C.muted}}>{p.label} {p.value}</button>)}</div></div>}
           {calibMode==='line'&&scalePts.length===2&&scaleMm&&+scaleMm>0&&<Btn onClick={confirmLine} style={{marginBottom:8}}>기준 확정 → 영역 설정으로</Btn>}
           {calibMode==='line'&&scalePts.length>0&&<BtnG onClick={()=>setScalePts([])} style={{width:'100%',textAlign:'center'}}>↩ 초기화</BtnG>}
-
           {calibMode==='homography'&&<div>
-            <div style={{background:C.card,borderRadius:14,padding:14,marginBottom:12}}>
-              <div style={{fontWeight:600,marginBottom:10,fontSize:13}}>탭 순서 (직사각형 4코너)</div>
-              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6}}>
-                {HOMO_LABELS.map((l,i)=>(
-                  <div key={i} style={{display:'flex',alignItems:'center',gap:8,padding:'8px 10px',borderRadius:8,
-                    background:i<homoPts.length?`${HOMO_COLORS[i]}18`:C.faint,
-                    border:`1px solid ${i<homoPts.length?HOMO_COLORS[i]:i===homoPts.length?C.accent:C.border}`}}>
-                    <div style={{width:10,height:10,borderRadius:'50%',background:i<homoPts.length?HOMO_COLORS[i]:i===homoPts.length?C.accent:C.faint}}/>
-                    <span style={{fontSize:12,color:i<homoPts.length?'#aaa':i===homoPts.length?C.txt:C.muted}}>{l}</span>
-                    {i<homoPts.length&&<span style={{marginLeft:'auto'}}>✅</span>}
-                    {i===homoPts.length&&<span style={{marginLeft:'auto',fontSize:11,color:C.accentTxt}}>← 탭</span>}
-                  </div>
-                ))}
-              </div>
-            </div>
-            {homoPts.length===4&&<div style={{background:C.card,borderRadius:14,border:`2px solid ${C.accent}33`,padding:16,marginBottom:12}}>
-              <div style={{fontWeight:600,marginBottom:10}}>직사각형 실제 크기</div>
-              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:12}}>
-                {[{label:'↔ 가로',val:homoW,set:setHomoW,ph:'예: 900'},
-                  {label:'↕ 세로',val:homoH,set:setHomoH,ph:'예: 2100'}].map(({label,val,set,ph})=>(
-                  <div key={label}>
-                    <div style={{fontSize:12,color:C.muted,marginBottom:4}}>{label} (mm)</div>
-                    <input type="number" value={val} onChange={e=>set(e.target.value)} placeholder={ph}
-                      style={{width:'100%',padding:'12px',borderRadius:10,border:`2px solid ${C.accent}`,background:'#242424',color:C.txt,fontSize:18,fontWeight:700}}/>
-                  </div>
-                ))}
-              </div>
-              <div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:12}}>
-                {[{w:900,h:2100,l:'문 900×2100'},{w:800,h:2000,l:'문 800×2000'},{w:600,h:600,l:'타일 600'},{w:300,h:300,l:'타일 300'}].map(({w,h,l})=>(
-                  <button key={l} onClick={()=>{setHomoW(String(w));setHomoH(String(h));}} style={{padding:'8px 12px',borderRadius:8,cursor:'pointer',fontSize:12,
-                    border:`1px solid ${homoW==w&&homoH==h?C.accent:C.border}`,background:homoW==w&&homoH==h?C.accentDim:'#2a2a2a',
-                    color:homoW==w&&homoH==h?C.accentTxt:C.muted}}>{l}</button>
-                ))}
-              </div>
-              {homoW&&homoH&&+homoW>0&&+homoH>0&&<Btn onClick={confirmHomo}>4점 원근 보정 확정</Btn>}
-            </div>}
+            <div style={{background:C.card,borderRadius:14,padding:14,marginBottom:12}}><div style={{fontWeight:600,marginBottom:10,fontSize:13}}>탭 순서</div><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6}}>{HOMO_LABELS.map((l,i)=>(<div key={i} style={{display:'flex',alignItems:'center',gap:8,padding:'8px 10px',borderRadius:8,background:i<homoPts.length?`${HOMO_COLORS[i]}18`:C.faint,border:`1px solid ${i<homoPts.length?HOMO_COLORS[i]:i===homoPts.length?C.accent:C.border}`}}><div style={{width:10,height:10,borderRadius:'50%',background:i<homoPts.length?HOMO_COLORS[i]:i===homoPts.length?C.accent:C.faint}}/><span style={{fontSize:12,color:i<homoPts.length?'#aaa':i===homoPts.length?C.txt:C.muted}}>{l}</span>{i<homoPts.length&&<span style={{marginLeft:'auto'}}>✅</span>}{i===homoPts.length&&<span style={{marginLeft:'auto',fontSize:11,color:C.accentTxt}}>← 탭</span>}</div>))}</div></div>
+            {homoPts.length===4&&<div style={{background:C.card,borderRadius:14,border:`2px solid ${C.accent}33`,padding:16,marginBottom:12}}><div style={{fontWeight:600,marginBottom:10}}>직사각형 실제 크기</div><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8,marginBottom:12}}>{[{label:'↔ 가로',val:homoW,set:setHomoW,ph:'예: 900'},{label:'↕ 세로',val:homoH,set:setHomoH,ph:'예: 2100'}].map(({label,val,set,ph})=>(<div key={label}><div style={{fontSize:12,color:C.muted,marginBottom:4}}>{label} (mm)</div><input type="number" value={val} onChange={e=>set(e.target.value)} placeholder={ph} style={{width:'100%',padding:'12px',borderRadius:10,border:`2px solid ${C.accent}`,background:'#242424',color:C.txt,fontSize:18,fontWeight:700}}/></div>))}</div><div style={{display:'flex',flexWrap:'wrap',gap:6,marginBottom:12}}>{[{w:900,h:2100,l:'문 900×2100'},{w:800,h:2000,l:'문 800×2000'},{w:600,h:600,l:'타일 600'},{w:300,h:300,l:'타일 300'}].map(({w,h,l})=>(<button key={l} onClick={()=>{setHomoW(String(w));setHomoH(String(h));}} style={{padding:'8px 12px',borderRadius:8,cursor:'pointer',fontSize:12,border:`1px solid ${homoW==w&&homoH==h?C.accent:C.border}`,background:homoW==w&&homoH==h?C.accentDim:'#2a2a2a',color:homoW==w&&homoH==h?C.accentTxt:C.muted}}>{l}</button>))}</div>{homoW&&homoH&&+homoW>0&&+homoH>0&&<Btn onClick={confirmHomo}>4점 원근 보정 확정</Btn>}</div>}
             {homoPts.length>0&&<BtnG onClick={()=>setHomoPts([])} style={{width:'100%',textAlign:'center'}}>↩ 점 초기화</BtnG>}
           </div>}
         </div>
       </div>}
 
-      {/* ══ STEP 4 ══ */}
+      {/* STEP 4 */}
       {step===4&&img&&<div>
         <div className="no-print" style={{padding:'10px 18px',background:C.surf,borderBottom:`1px solid ${C.border}`}}>
-          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}>
-            <div>
-              <div style={{fontWeight:700,fontSize:15}}>컷팅 영역 설정</div>
-              {calib&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:10,
-                background:calib.mode==='homography'?`${C.warn}22`:`${C.accent}22`,
-                color:calib.mode==='homography'?C.warn:C.accentTxt}}>
-                {calib.mode==='homography'?'🔲 4점 원근 보정':'📏 기준선 보정'}
-              </span>}
-            </div>
-            <div style={{display:'flex',gap:6}}>
-              <BtnG onClick={undo}>↩</BtnG>
-              <BtnG onClick={()=>setStep(3)}>기준 재설정</BtnG>
-            </div>
-          </div>
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between'}}><div><div style={{fontWeight:700,fontSize:15}}>컷팅 영역 설정</div>{calib&&<span style={{fontSize:10,padding:'2px 8px',borderRadius:10,background:calib.mode==='homography'?`${C.warn}22`:`${C.accent}22`,color:calib.mode==='homography'?C.warn:C.accentTxt}}>{calib.mode==='homography'?'🔲 4점 원근 보정':'📏 기준선 보정'}</span>}</div><div style={{display:'flex',gap:6}}><BtnG onClick={undo}>↩</BtnG><BtnG onClick={()=>setStep(3)}>기준 재설정</BtnG></div></div>
         </div>
         <div style={{padding:'10px 16px',background:`${C.accent}15`,borderBottom:`1px solid ${C.accent}33`,display:'flex',alignItems:'center',gap:10}}>
-          <span style={{fontSize:18}}>✨</span>
-          <div style={{flex:1}}>
-            <div style={{fontSize:13,fontWeight:600,color:C.accentTxt}}>AI 자동 감지</div>
-            <div style={{fontSize:11,color:C.muted}}>Claude Vision이 영역을 자동 인식</div>
-          </div>
-          <button onClick={runAIDetect} disabled={aiLoading} style={{padding:'10px 16px',borderRadius:8,border:'none',
-            background:aiLoading?C.faint:C.accent,color:'#fff',fontSize:13,fontWeight:700,
-            cursor:aiLoading?'default':'pointer',whiteSpace:'nowrap'}}>
-            {aiLoading?'분석 중...':'AI 감지'}
-          </button>
+          <span>✨</span><div style={{flex:1}}><div style={{fontSize:13,fontWeight:600,color:C.accentTxt}}>AI 자동 감지</div><div style={{fontSize:11,color:C.muted}}>Claude Vision이 영역 자동 인식</div></div>
+          <button onClick={runAIDetect} disabled={aiLoading||!isOnline} style={{padding:'10px 16px',borderRadius:8,border:'none',background:aiLoading||!isOnline?C.faint:C.accent,color:'#fff',fontSize:13,fontWeight:700,cursor:aiLoading||!isOnline?'default':'pointer',whiteSpace:'nowrap'}}>{aiLoading?'분석 중...':!isOnline?'오프라인':'AI 감지'}</button>
         </div>
         <CanvasArea/>
         <div style={{padding:16}}>
           <div style={{background:C.card,borderRadius:14,padding:16,marginBottom:12}}>
-            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}>
-              <span style={{fontWeight:600}}>컷팅 영역</span>
-              <BtnG onClick={addPiece} style={{color:C.accentTxt,border:`1px solid ${C.accent}33`}}>+ 영역 추가</BtnG>
-            </div>
-            {pieces.map((piece,i)=>(
-              <div key={piece.id} onClick={()=>setActiveId(piece.id)} style={{
-                display:'flex',alignItems:'center',gap:10,
-                background:activeId===piece.id?`${C.accent}12`:'transparent',
-                border:`1px solid ${activeId===piece.id?C.accent:C.border}`,
-                borderRadius:10,padding:'12px 14px',marginBottom:6,cursor:'pointer'}}>
-                <div style={{width:12,height:12,borderRadius:'50%',background:CUT_COLORS[i%CUT_COLORS.length],flexShrink:0}}/>
-                <span style={{flex:1,fontSize:14}}>{piece.name}</span>
-                {piece.fromAI&&<span style={{fontSize:10,color:C.accentTxt,background:`${C.accent}22`,padding:'2px 6px',borderRadius:4}}>✨AI</span>}
-                <span style={{fontSize:12,color:C.muted}}>{piece.closed?'✅':piece.pts.length+'점'}</span>
-                <span onClick={e=>{e.stopPropagation();setPieces(p=>p.filter(x=>x.id!==piece.id));}} style={{color:C.faint,padding:'0 6px',fontSize:18,cursor:'pointer'}}>✕</span>
-              </div>
-            ))}
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:12}}><span style={{fontWeight:600}}>컷팅 영역</span><BtnG onClick={addPiece} style={{color:C.accentTxt,border:`1px solid ${C.accent}33`}}>+ 영역 추가</BtnG></div>
+            {pieces.map((piece,i)=>(<div key={piece.id} onClick={()=>setActiveId(piece.id)} style={{display:'flex',alignItems:'center',gap:10,background:activeId===piece.id?`${C.accent}12`:'transparent',border:`1px solid ${activeId===piece.id?C.accent:C.border}`,borderRadius:10,padding:'12px 14px',marginBottom:6,cursor:'pointer'}}><div style={{width:12,height:12,borderRadius:'50%',background:CUT_COLORS[i%CUT_COLORS.length],flexShrink:0}}/><span style={{flex:1,fontSize:14}}>{piece.name}</span>{piece.fromAI&&<span style={{fontSize:10,color:C.accentTxt,background:`${C.accent}22`,padding:'2px 6px',borderRadius:4}}>✨AI</span>}<span style={{fontSize:12,color:C.muted}}>{piece.closed?'✅':piece.pts.length+'점'}</span><span onClick={e=>{e.stopPropagation();setPieces(p=>p.filter(x=>x.id!==piece.id));}} style={{color:C.faint,padding:'0 6px',fontSize:18,cursor:'pointer'}}>✕</span></div>))}
           </div>
-          {ms.some(m=>m.sides.length>0)&&<div style={{background:C.card,borderRadius:14,padding:16,marginBottom:12}}>
-            <div style={{fontWeight:600,marginBottom:12}}>📏 실시간 치수 ({admin.unit})</div>
-            {ms.map((m,i)=>m.sides.length>0&&<div key={i} style={{marginBottom:14}}>
-              <div style={{display:'flex',alignItems:'center',gap:6,marginBottom:8}}>
-                <span style={{fontSize:13,color:CUT_COLORS[i%CUT_COLORS.length],fontWeight:600}}>{m.name}</span>
-                {m.fromAI&&<span style={{fontSize:10,color:C.accentTxt}}>✨AI</span>}
-              </div>
-              <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6}}>
-                {m.sides.map((s,j)=><div key={j} style={{background:'#2a2a2a',borderRadius:8,padding:'10px 12px'}}>
-                  <div style={{fontSize:10,color:C.muted}}>변 {j+1}</div>
-                  <div style={{fontWeight:700,fontSize:16}}>{fmtLen(s)}</div>
-                </div>)}
-                {m.closed&&<div style={{background:`${C.accent}12`,border:`1px solid ${C.accent}33`,borderRadius:8,padding:'10px 12px'}}>
-                  <div style={{fontSize:10,color:C.muted}}>면적</div>
-                  <div style={{fontWeight:700,fontSize:16,color:C.accentTxt}}>{fmtArea(m.areaMm2)}</div>
-                </div>}
-              </div>
-              {prodType==='puzzle'&&m.closed&&(()=>{const t=getTiles(m.piece);return t?<div style={{fontSize:12,color:C.muted,marginTop:6}}>타일 {tileSize}mm: 약 <strong style={{color:C.txt}}>{t.total}장</strong> ({t.cols}×{t.rows})</div>:null;})()}
-            </div>)}
-          </div>}
-          <Btn onClick={()=>setStep(5)} style={{background:hasClosed?C.success:'#555',cursor:hasClosed?'pointer':'not-allowed'}} disabled={!hasClosed}>
-            {hasClosed?'결과 출력 →':'완성된 영역이 없어요'}
-          </Btn>
+          {ms.some(m=>m.sides.length>0)&&<div style={{background:C.card,borderRadius:14,padding:16,marginBottom:12}}><div style={{fontWeight:600,marginBottom:12}}>📏 실시간 치수 ({admin.unit})</div>{ms.map((m,i)=>m.sides.length>0&&<div key={i} style={{marginBottom:14}}><div style={{fontSize:13,color:CUT_COLORS[i%CUT_COLORS.length],fontWeight:600,marginBottom:8}}>{m.name}</div><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:6}}>{m.sides.map((s,j)=><div key={j} style={{background:'#2a2a2a',borderRadius:8,padding:'10px 12px'}}><div style={{fontSize:10,color:C.muted}}>변 {j+1}</div><div style={{fontWeight:700,fontSize:16}}>{fmtLen(s)}</div></div>)}{m.closed&&<div style={{background:`${C.accent}12`,border:`1px solid ${C.accent}33`,borderRadius:8,padding:'10px 12px'}}><div style={{fontSize:10,color:C.muted}}>면적</div><div style={{fontWeight:700,fontSize:16,color:C.accentTxt}}>{fmtArea(m.areaMm2)}</div></div>}</div>{prodType==='puzzle'&&m.closed&&(()=>{const t=getTiles(m.piece);return t?<div style={{fontSize:12,color:C.muted,marginTop:6}}>타일 {tileSize}mm: 약 <strong style={{color:C.txt}}>{t.total}장</strong> ({t.cols}×{t.rows})</div>:null;})()}</div>)}</div>}
+          <Btn onClick={()=>setStep(5)} style={{background:hasClosed?C.success:'#555',cursor:hasClosed?'pointer':'not-allowed'}} disabled={!hasClosed}>{hasClosed?'결과 출력 →':'완성된 영역이 없어요'}</Btn>
         </div>
-        {ap&&!ap.closed&&ap.pts.length>=3&&<div className="no-print" style={{position:'fixed',bottom:0,left:0,right:0,background:C.surf,borderTop:`1px solid ${C.border}`,padding:'12px 18px',maxWidth:600,margin:'0 auto',zIndex:50}}>
-          <div style={{display:'flex',gap:8}}>
-            <BtnS onClick={undo} style={{flex:1,padding:'14px'}}>↩ 되돌리기</BtnS>
-            <Btn onClick={()=>{setPieces(p=>p.map(x=>x.id===activeId?{...x,closed:true}:x));showToast('✅ 도형 완성!');}} style={{flex:2}}>✅ 도형 완성하기</Btn>
-          </div>
-        </div>}
+        {ap&&!ap.closed&&ap.pts.length>=3&&<div className="no-print" style={{position:'fixed',bottom:0,left:0,right:0,background:C.surf,borderTop:`1px solid ${C.border}`,padding:'12px 18px',maxWidth:600,margin:'0 auto',zIndex:50}}><div style={{display:'flex',gap:8}}><BtnS onClick={undo} style={{flex:1,padding:'14px'}}>↩ 되돌리기</BtnS><Btn onClick={()=>{setPieces(p=>p.map(x=>x.id===activeId?{...x,closed:true}:x));showToast('✅ 도형 완성!');}} style={{flex:2}}>✅ 도형 완성하기</Btn></div></div>}
       </div>}
 
-      {/* ══ STEP 5 ══ */}
+      {/* STEP 5 */}
       {step===5&&<div style={{padding:20}}>
         <BtnG className="no-print" onClick={()=>setStep(4)}>← 뒤로</BtnG>
         <h2 style={{fontSize:22,fontWeight:800,margin:'16px 0 6px'}}>컷팅 가이드</h2>
-        <p style={{color:C.muted,fontSize:14,marginBottom:16}}>치수를 확인하고 파일을 저장하세요</p>
-        {calib&&<div style={{background:C.card,borderRadius:10,padding:'10px 14px',marginBottom:16,
-          border:`1px solid ${calib.mode==='homography'?C.warn+'44':C.accent+'44'}`,display:'flex',alignItems:'center',gap:8}}>
-          <span>{calib.mode==='homography'?'🔲':'📏'}</span>
-          <span style={{fontSize:13,color:C.muted}}>{calib.mode==='homography'?'4점 원근 보정 적용 (광각 왜곡 보정)':'기준선 보정 적용'}</span>
-        </div>}
-        {ms.filter(m=>m.sides.length>0).map((m,i)=>(
-          <div key={i} style={{background:C.card,borderRadius:14,padding:16,marginBottom:12}}>
-            <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:14}}>
-              <div style={{width:12,height:12,borderRadius:'50%',background:CUT_COLORS[i%CUT_COLORS.length]}}/>
-              <span style={{fontWeight:700,fontSize:16}}>{m.name}</span>
-              {m.fromAI&&<span style={{fontSize:11,color:C.accentTxt,background:`${C.accent}22`,padding:'2px 8px',borderRadius:4}}>✨ AI</span>}
-              {m.closed&&<span style={{marginLeft:'auto',fontSize:11,color:C.success,background:'#14532d44',padding:'3px 10px',borderRadius:999}}>완성됨</span>}
-            </div>
-            <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>
-              {m.sides.map((s,j)=><div key={j} style={{background:'#2a2a2a',borderRadius:10,padding:14}}>
-                <div style={{fontSize:11,color:C.muted,marginBottom:3}}>변 {j+1}</div>
-                <div style={{fontWeight:800,fontSize:22}}>{fmtLen(s)}</div>
-                <div style={{fontSize:11,color:C.muted}}>{admin.unit==='mm'?`${(s/10).toFixed(1)} cm`:`${Math.round(s)} mm`}</div>
-              </div>)}
-              {m.closed&&<div style={{background:`${C.accent}12`,border:`1px solid ${C.accent}33`,borderRadius:10,padding:14}}>
-                <div style={{fontSize:11,color:C.muted,marginBottom:3}}>면적</div>
-                <div style={{fontWeight:800,fontSize:20,color:C.accentTxt}}>{fmtArea(m.areaMm2)}</div>
-              </div>}
-              {prodType==='puzzle'&&m.closed&&(()=>{const t=getTiles(m.piece);return t?
-                <div style={{background:`${C.success}12`,border:`1px solid ${C.success}33`,borderRadius:10,padding:14}}>
-                  <div style={{fontSize:11,color:C.muted,marginBottom:3}}>필요 타일 ({tileSize}mm)</div>
-                  <div style={{fontWeight:800,fontSize:22,color:C.success}}>{t.total}<span style={{fontSize:13,color:C.muted,marginLeft:2}}>장</span></div>
-                  <div style={{fontSize:11,color:C.muted}}>{t.cols}열 × {t.rows}행</div>
-                </div>:null;})()}
+        <p style={{color:C.muted,fontSize:14,marginBottom:16}}>치수 확인 후 파일을 저장하세요</p>
+        {calib&&<div style={{background:C.card,borderRadius:10,padding:'10px 14px',marginBottom:16,border:`1px solid ${calib.mode==='homography'?C.warn+'44':C.accent+'44'}`,display:'flex',alignItems:'center',gap:8}}><span>{calib.mode==='homography'?'🔲':'📏'}</span><span style={{fontSize:13,color:C.muted}}>{calib.mode==='homography'?'4점 원근 보정 적용':'기준선 보정 적용'}</span></div>}
+        {ms.filter(m=>m.sides.length>0).map((m,i)=>(<div key={i} style={{background:C.card,borderRadius:14,padding:16,marginBottom:12}}><div style={{display:'flex',alignItems:'center',gap:8,marginBottom:14}}><div style={{width:12,height:12,borderRadius:'50%',background:CUT_COLORS[i%CUT_COLORS.length]}}/><span style={{fontWeight:700,fontSize:16}}>{m.name}</span>{m.fromAI&&<span style={{fontSize:11,color:C.accentTxt,background:`${C.accent}22`,padding:'2px 8px',borderRadius:4}}>✨ AI</span>}{m.closed&&<span style={{marginLeft:'auto',fontSize:11,color:C.success,background:'#14532d44',padding:'3px 10px',borderRadius:999}}>완성됨</span>}</div><div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:8}}>{m.sides.map((s,j)=><div key={j} style={{background:'#2a2a2a',borderRadius:10,padding:14}}><div style={{fontSize:11,color:C.muted,marginBottom:3}}>변 {j+1}</div><div style={{fontWeight:800,fontSize:22}}>{fmtLen(s)}</div><div style={{fontSize:11,color:C.muted}}>{admin.unit==='mm'?`${(s/10).toFixed(1)} cm`:`${Math.round(s)} mm`}</div></div>)}{m.closed&&<div style={{background:`${C.accent}12`,border:`1px solid ${C.accent}33`,borderRadius:10,padding:14}}><div style={{fontSize:11,color:C.muted,marginBottom:3}}>면적</div><div style={{fontWeight:800,fontSize:20,color:C.accentTxt}}>{fmtArea(m.areaMm2)}</div></div>}{prodType==='puzzle'&&m.closed&&(()=>{const t=getTiles(m.piece);return t?<div style={{background:`${C.success}12`,border:`1px solid ${C.success}33`,borderRadius:10,padding:14}}><div style={{fontSize:11,color:C.muted,marginBottom:3}}>필요 타일 ({tileSize}mm)</div><div style={{fontWeight:800,fontSize:22,color:C.success}}>{t.total}<span style={{fontSize:13,color:C.muted,marginLeft:2}}>장</span></div><div style={{fontSize:11,color:C.muted}}>{t.cols}열 × {t.rows}행</div></div>:null;})()}</div></div>))}
+        <div className="no-print" style={{display:'grid',gap:10,marginTop:8}}>
+          <button onClick={()=>{setProjectName(`현장 ${new Date().toLocaleDateString('ko-KR')}`);setShowSaveDialog(true);}} style={{padding:'14px',borderRadius:12,border:`2px solid ${C.success}`,background:`${C.success}12`,color:C.success,fontSize:15,fontWeight:700,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:10}}><span style={{fontSize:20}}>💾</span>프로젝트 저장</button>
+          <Btn onClick={exportSVG} style={{display:'flex',alignItems:'center',justifyContent:'center',gap:8}}><span>⬇️</span>SVG 다운로드</Btn>
+          <div style={{background:`${C.warn}10`,border:`1px solid ${C.warn}33`,borderRadius:14,padding:16}}>
+            <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:12}}><span style={{fontSize:18}}>⚡</span><div style={{flex:1}}><div style={{fontWeight:700,color:C.warn,fontSize:15}}>G-code + 커팅기 제어</div><div style={{fontSize:11,color:C.muted}}>{(admin.cutting||DEFAULT_CUTTING).material} | {(admin.cutting||DEFAULT_CUTTING).cutSpeed}mm/min</div></div><button onClick={()=>{setShowSettings(true);setSettingsTab('cutting');}} style={{padding:'4px 10px',borderRadius:6,border:`1px solid ${C.warn}44`,background:'transparent',color:C.warn,fontSize:11,cursor:'pointer'}}>⚙️</button></div>
+            {gcStats&&<div style={{display:'grid',gridTemplateColumns:'1fr 1fr 1fr',gap:6,marginBottom:12}}>{[{l:'절단 거리',v:`${(gcStats.cutDist/1000).toFixed(2)}m`},{l:'이동 거리',v:`${(gcStats.travelDist/1000).toFixed(2)}m`},{l:'예상 시간',v:gcStats.timeSec<60?`${gcStats.timeSec}초`:`${Math.floor(gcStats.timeSec/60)}분`}].map(({l,v})=>(<div key={l} style={{background:'rgba(0,0,0,0.3)',borderRadius:8,padding:'8px',textAlign:'center'}}><div style={{fontSize:10,color:C.muted}}>{l}</div><div style={{fontWeight:700,fontSize:14,color:C.warn}}>{v}</div></div>))}</div>}
+            <div style={{display:'grid',gap:8}}>
+              <button onClick={()=>setShowGcodePreview(true)} style={{padding:'12px',borderRadius:10,border:`1px solid ${C.warn}55`,background:`${C.warn}15`,color:C.warn,fontSize:14,fontWeight:700,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:8}}>🎬 커팅 경로 시뮬레이터</button>
+              <button onClick={()=>{
+                if(!deviceInfo)return showToast('기기를 먼저 연결해주세요');
+                try{const gc=GcodeGen.generate(pieces,calib,admin.cutting||DEFAULT_CUTTING);setCuttingGcode(gc||'');setShowCuttingModal(true);}
+                catch(e){showToast(fmtErr(e),4000);}
+              }} style={{padding:'14px',borderRadius:10,border:'none',background:deviceInfo?C.success:'#333',color:deviceInfo?'#fff':C.muted,fontSize:15,fontWeight:700,cursor:deviceInfo?'pointer':'default',display:'flex',alignItems:'center',justifyContent:'center',gap:10}}><span style={{fontSize:20}}>📡</span>{deviceInfo?`커팅기로 전송 — ${deviceInfo.name}`:'커팅기 미연결 (⚙️에서 연결)'}</button>
+              <button onClick={downloadGcode} style={{padding:'12px',borderRadius:10,border:'none',background:C.warn,color:'#000',fontSize:14,fontWeight:700,cursor:'pointer',display:'flex',alignItems:'center',justifyContent:'center',gap:8}}>⬇️ G-code 다운로드 (.nc)</button>
             </div>
           </div>
-        ))}
-        <div className="no-print" style={{display:'grid',gap:10,marginTop:8}}>
-          <Btn onClick={exportSVG} style={{display:'flex',alignItems:'center',justifyContent:'center',gap:8}}><span>⬇️</span>SVG 다운로드</Btn>
-          <BtnS onClick={()=>window.print()} style={{width:'100%',padding:14,display:'flex',alignItems:'center',justifyContent:'center',gap:8}}><span>🖨️</span>인쇄</BtnS>
+          <BtnS onClick={()=>window.print()} style={{width:'100%',padding:14,display:'flex',alignItems:'center',justifyContent:'center',gap:8}}>🖨️ 인쇄</BtnS>
         </div>
-        <div style={{background:C.card,borderRadius:14,padding:16,marginTop:16,fontSize:12,color:C.muted,lineHeight:1.9}}>
-          📌 SVG는 실제 mm 1:1 비율 · CNC/칼날 커터 직접 사용 가능
-        </div>
+        <div style={{background:C.card,borderRadius:14,padding:16,marginTop:16,fontSize:12,color:C.muted,lineHeight:1.9}}>📌 SVG: mm 1:1 비율 · CNC/칼날 커터 사용 가능<br/>📌 G-code: GRBL/Marlin 호환 커팅기 직접 전송 가능</div>
       </div>}
     </div>
   );
